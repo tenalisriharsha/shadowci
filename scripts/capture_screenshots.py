@@ -182,21 +182,60 @@ def main() -> None:
             browser,
         )
 
-        # 5. init failure path — not a git repository
+        # 5. watch finds a real bug, runs checks, and escalates to the LLM provider
+        bug_repo = Path(tempfile.gettempdir()) / "shadowci-bug-repo"
+        shutil.rmtree(bug_repo, ignore_errors=True)
+        bug_repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=bug_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Demo User"], cwd=bug_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "demo@example.com"], cwd=bug_repo, check=True)
+        (bug_repo / "calculator.py").write_text("def add(a, b):\n    return a + b\n")
+        (bug_repo / "tests").mkdir()
+        (bug_repo / "tests" / "test_calculator.py").write_text(
+            "from calculator import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+        )
+        subprocess.run(["git", "add", "calculator.py", "tests"], cwd=bug_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=bug_repo, check=True)
+        (bug_repo / "shadowci.toml").write_text(
+            "[shadowci]\ndebounce_seconds = 0.1\nidle_seconds = 0.3\n"
+        )
+        watch_checks_cmd = [
+            PYTHON, "-m", "shadowci", "watch", ".",
+            "--max-cycles", "30", "--interval", "0.1",
+        ]
+        proc = subprocess.Popen(
+            watch_checks_cmd, cwd=bug_repo,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        time.sleep(0.4)
+        (bug_repo / "calculator.py").write_text("def add(a, b):\n    return a + b + 1\n")
+        stdout, _ = proc.communicate(timeout=20)
+        shot(
+            render(
+                label(bug_repo),
+                "shadowci watch . --max-cycles 30 --interval 0.1",
+                stdout, "", proc.returncode, "shadowci watch (check fails, escalates)",
+            ),
+            OUT_DIR / "05-watch-checks-and-escalates.png",
+            browser,
+        )
+        shutil.rmtree(bug_repo, ignore_errors=True)
+
+        # 6. init failure path — not a git repository
         cmd = [PYTHON, "-m", "shadowci", "init", str(not_a_repo)]
         result = run(cmd, cwd=REPO_ROOT)
         shot(
             render(label(REPO_ROOT), f"shadowci init {not_a_repo}", result.stdout, result.stderr, result.returncode, "shadowci init (failure path)"),
-            OUT_DIR / "05-init-failure.png",
+            OUT_DIR / "06-init-failure.png",
             browser,
         )
 
-        # 6. test suite, green
+        # 7. test suite, green
         cmd = [PYTHON, "-m", "pytest", "-v"]
         result = run(cmd, cwd=REPO_ROOT)
         shot(
             render(label(REPO_ROOT), "python -m pytest -v", result.stdout, result.stderr, result.returncode, "shadowci test suite"),
-            OUT_DIR / "06-test-suite.png",
+            OUT_DIR / "07-test-suite.png",
             browser,
         )
 
