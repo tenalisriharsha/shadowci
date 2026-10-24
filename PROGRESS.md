@@ -97,12 +97,42 @@ quality can be tuned and regression-tested without a human in the loop.
   `write_regression_test`, …).
 - `providers/scripted.py` — `ScriptedProvider`: deterministic, canned
   responses for tests/CI/demos — no network access, no API key.
-- `cli.py` — `shadowci` command group: `init`, `status`, `watch`.
+- `providers/prompts.py` — shared prompt text for the model-backed
+  providers (one place to tune "write a regression test" / "propose a fix").
+- `providers/claude_cli.py` — `ClaudeCLIProvider`: shells out to headless
+  `claude -p <prompt>` so ShadowCI can get a real model's output with no
+  SDK dependency and no API key of its own.
+- `providers/local.py` — `LocalModelProvider`: talks to a local model
+  server (Ollama's `/api/generate` by default) over HTTP.
+- `providers/__init__.py` — `create_provider(name)` factory: builds the
+  provider named in `ShadowCIConfig.provider`, raising `ValueError` on a
+  typo instead of silently falling back.
+- `checks/base.py` — `CheckRunner` interface + `run_subprocess` helper
+  shared by every runner.
+- `checks/pytest_runner.py` — `PytestRunner`: runs the full suite; "no
+  tests collected" counts as a pass, not a failure.
+- `checks/type_checker.py` — `MypyRunner`: runs `mypy`, skipping (pass)
+  when it isn't installed in the project.
+- `checks/lint_runner.py` — `RuffRunner`: runs `ruff check`, same
+  skip-when-absent behavior.
+- `checks/targeted.py` — `find_targeted_tests` / `TargetedTestRunner`: maps
+  a changed file to the test file that plausibly covers it (by name
+  convention or by reference), so most change sets only run a handful of
+  tests instead of the whole suite.
+- `checks/suite.py` — `build_check_runners` / `run_checks`: picks targeted
+  tests when a match exists, else the full suite, then runs type checker
+  and linter after.
+- `escalation.py` — `EscalationPolicy`: calls an `LLMProvider` only when at
+  least one `CheckResult` in a batch failed; a clean run never costs a
+  model call.
+- `cli.py` — `shadowci` command group: `init`, `status`, `watch` (now runs
+  deterministic checks after every stable change set and escalates on
+  failure; `watch --skip-checks` opts back out).
 - `__main__.py` — `python -m shadowci` entry point.
 
 ## Phased Build Plan
 
-- [x] **Phase 1 — Scaffold & Core Foundation** *(tonight)*
+- [x] **Phase 1 — Scaffold & Core Foundation**
   - Project scaffold (`pyproject.toml`, `src/` layout, packaging, pytest config)
   - Core event/data models (`events.py`)
   - Config loading (`config.py`)
@@ -113,12 +143,22 @@ quality can be tuned and regression-tested without a human in the loop.
   - `shadowci init` / `status` / `watch` CLI
   - Full unit test coverage for every module above, all green
 
-- [ ] **Phase 2 — Deterministic Checks & LLM Escalation**
-  - Pluggable check runners: pytest runner, type-checker runner, linter runner
-  - "Targeted checks" — map changed functions to the tests that cover them
-  - `claude -p` headless provider and local-model provider implementations
-  - Escalation policy: only call an `LLMProvider` after deterministic checks
-    fail
+- [x] **Phase 2 — Deterministic Checks & LLM Escalation**
+  - Pluggable check runners: `PytestRunner`, `MypyRunner`, `RuffRunner`,
+    each degrading to a trivial pass when the tool isn't installed or
+    there's nothing to check
+  - "Targeted checks" — `find_targeted_tests` maps a changed source file to
+    the test file that plausibly covers it (name convention or reference),
+    so `watch` runs a handful of tests instead of the full suite when it can
+  - `ClaudeCLIProvider` (headless `claude -p`) and `LocalModelProvider`
+    (Ollama-style HTTP server) behind the same `LLMProvider` interface,
+    plus a `create_provider(name)` factory
+  - `EscalationPolicy` — calls the configured `LLMProvider` only when a
+    `CheckResult` batch has an actual failure; `shadowci watch` now runs
+    checks after every stable change set and prints the escalation
+    (regression test + proposed fix) when one fires; `--skip-checks` opts
+    back out
+  - Full unit test coverage for every module above, all green
 
 - [ ] **Phase 3 — Ghost Patches**
   - LLM-driven failing-test authoring in the shadow worktree
@@ -144,13 +184,22 @@ quality can be tuned and regression-tested without a human in the loop.
 
 ## Where to resume
 
-**Next session: start Phase 2.** Phase 1 is complete — scaffold, core data
-models, polling watcher, change-set detector, shadow worktree manager,
-provider interface + scripted stub, and the `init`/`status`/`watch` CLI are
-all implemented and fully tested (see `tests/`). Begin Phase 2 by adding the
-pytest/type-checker/linter check runners under a new `src/shadowci/checks/`
-package, wire them into `watch` so a stable `ChangeSet` triggers real checks
-in the shadow worktree, and only then stub out the `claude -p` headless
-provider.
+**Next session: start Phase 3 (Ghost Patches).** Phases 1 and 2 are
+complete — scaffold, core data models, polling watcher, change-set
+detector, shadow worktree manager, the full `checks/` package
+(pytest/mypy/ruff/targeted), the `claude-cli`/`local`/`scripted` providers,
+`EscalationPolicy`, and a `watch` command that runs checks and escalates on
+failure are all implemented and fully tested (see `tests/`).
+
+Right now `EscalationPolicy` only asks a provider for a regression test and
+a fix diff and prints them — nothing is applied anywhere. Phase 3 needs to:
+take the regression test the provider wrote, actually add it to the shadow
+worktree and confirm it reproduces the failure; apply the proposed fix
+there too and re-run the full suite to confirm nothing else regressed; only
+then construct a `GhostPatch` + `EvidenceCard` (both already modeled in
+`events.py`) from a real diff between the shadow worktree and the live
+tree; and rebase that diff onto whatever the user has edited in the live
+tree meanwhile before it's considered ready to offer. The one-keystroke
+apply-to-live-files flow is the last piece of that phase.
 
 STATUS: IN_PROGRESS

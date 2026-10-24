@@ -8,24 +8,17 @@ and prepares verified bug fixes without ever touching your working tree.
 It watches file saves, mirrors your uncommitted changes into a shadow git
 worktree, and waits until a change set is actually complete — debounced,
 idle, and syntactically valid — before doing anything with it. Deterministic
-checks (tests, type checker, linters) run first, for free; an LLM is only
-called once a real failure is confirmed. When it finds one, ShadowCI writes
-a failing test, fixes the bug in the shadow worktree, confirms nothing else
-regressed, and hands you a "ghost patch" with an evidence card — a diff you
-can apply to your live files in one keystroke, rebased onto whatever you've
-edited meanwhile.
+checks run first, for free: a targeted test run when a changed file maps to
+a specific test, falling back to the full suite otherwise, plus a type
+checker and a linter (both skipped harmlessly if not installed). An LLM is
+only called once one of those checks actually fails — and when it does,
+ShadowCI asks it to write a regression test and propose a fix.
 
-Silence is the default. An interruption policy learns from accept, reject,
-and ignore signals so it only surfaces a patch when it's confident. LLM
-access is pluggable — a scripted deterministic policy for tests and CI,
-headless `claude -p`, or a local model — so the whole system runs and is
-fully testable with no paid API key.
-
-## Project Status
-
-ShadowCI is under active development. See [PROGRESS.md](PROGRESS.md) for
-the full architecture, the phased build plan, and exactly what's
-implemented so far.
+LLM access is pluggable — a scripted deterministic policy for tests and CI,
+headless `claude -p`, or a local model server (Ollama-compatible) — so the
+whole system runs and is fully testable with no paid API key. Turning a
+confirmed failure into a verified, rebased "ghost patch" you can apply in
+one keystroke is in progress — see [PROGRESS.md](PROGRESS.md).
 
 ## Quick Start
 
@@ -35,9 +28,10 @@ cd shadowci
 pip install -e ".[dev]"
 
 cd /path/to/your/project   # must be a git repository
-shadowci init               # writes shadowci.toml and creates the shadow worktree
-shadowci status              # inspect current configuration
-shadowci watch                # watch for changes and sync them into the shadow worktree
+shadowci init                # writes shadowci.toml and creates the shadow worktree
+shadowci status               # inspect current configuration
+shadowci watch                 # watch for changes, sync them, run checks, escalate on failure
+shadowci watch --skip-checks    # just watch and sync, skip the check/escalation step
 ```
 
 ## Preview
@@ -54,20 +48,26 @@ shadowci watch                # watch for changes and sync them into the shadow 
 
 ![shadowci status](docs/screenshots/03-status.png)
 
-**`shadowci watch`** — detects a file change, waits for it to settle, and
-syncs it into the shadow worktree without touching the live repo's git
-state.
+**`shadowci watch`** — detects a file change, waits for it to settle, syncs
+it into the shadow worktree, and runs tests/type-checker/linter there —
+all clean, so it stays silent.
 
 ![shadowci watch detecting and syncing a change](docs/screenshots/04-watch-detects-and-syncs.png)
+
+**A real failure escalates** — a targeted test catches the bug, and only
+then does ShadowCI call the LLM provider for a regression test and a
+proposed fix.
+
+![shadowci watch running checks and escalating on a failure](docs/screenshots/05-watch-checks-and-escalates.png)
 
 **Failure path** — `shadowci init` against a directory that isn't a git
 repository fails cleanly instead of half-initializing.
 
-![shadowci init failure path](docs/screenshots/05-init-failure.png)
+![shadowci init failure path](docs/screenshots/06-init-failure.png)
 
 **Test suite** — every module shipped so far is covered.
 
-![shadowci test suite passing](docs/screenshots/06-test-suite.png)
+![shadowci test suite passing](docs/screenshots/07-test-suite.png)
 
 ## How It Works
 
@@ -131,12 +131,17 @@ Chromium build: `pip install playwright && playwright install chromium`).
 
 ## Status
 
-- Phase 1 (project scaffold, core data model, file watcher, change-set
-  detector, shadow git worktree, pluggable LLM provider interface, CLI) is
-  implemented and fully tested.
-- Deterministic check runners, LLM-driven ghost patches, the interruption
-  policy, the terminal bug-radar view, and the evaluation harness are not
-  built yet — see [PROGRESS.md](PROGRESS.md) for the phased plan.
+ShadowCI is under active development. Implemented and fully tested so far:
+
+- Project scaffold, core data model, file watcher, change-set detector, and
+  shadow git worktree (Phase 1).
+- Deterministic check runners (pytest, mypy, ruff) with targeted-test
+  matching, the `claude-cli` and `local` LLM providers, and an escalation
+  policy that calls a provider only after a real check failure (Phase 2).
+
+Ghost patches, the interruption policy, the terminal bug-radar view, and
+the evaluation harness are not built yet — see [PROGRESS.md](PROGRESS.md)
+for the full phased plan.
 
 ## License
 
