@@ -1,9 +1,11 @@
 """The `shadowci` command line interface.
 
-Phase 1 wires together the watcher, change-set detector, and shadow
-worktree so the foundation is observable end to end. Deterministic checks,
-LLM escalation, ghost patches, the interruption policy, and the bug-radar
-TUI arrive in later phases.
+Phase 1 wired together the watcher, change-set detector, and shadow
+worktree so the foundation is observable end to end. Phase 2 adds
+deterministic checks (tests/type checker/linter) run in the shadow
+worktree after every stable change set, and escalates to an `LLMProvider`
+only when one of them actually fails. Ghost patches, the interruption
+policy, and the bug-radar TUI arrive in later phases.
 """
 
 from __future__ import annotations
@@ -14,7 +16,11 @@ import time
 from pathlib import Path
 
 from shadowci.changeset import ChangeSetDetector
+from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
+from shadowci.escalation import EscalationPolicy
+from shadowci.events import ChangeSet, CheckResult
+from shadowci.providers import create_provider
 from shadowci.shadow_worktree import ShadowWorktree, ShadowWorktreeError
 from shadowci.watcher import PollingFileWatcher
 
@@ -60,6 +66,49 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_check_result(result: CheckResult) -> None:
+    status = "PASS" if result.passed else "FAIL"
+    print(f"  check [{result.name}] {status} ({result.duration_seconds:.2f}s)")
+    if not result.passed and result.output.strip():
+        for line in result.output.strip().splitlines()[:10]:
+            print(f"    {line}")
+
+
+def _run_checks_and_maybe_escalate(
+    changeset: ChangeSet, worktree: ShadowWorktree, config: ShadowCIConfig
+) -> None:
+    runners = build_check_runners(changeset, worktree.path)
+    results = run_checks(runners, worktree.path)
+    for result in results:
+        _print_check_result(result)
+
+    failing = tuple(result for result in results if not result.passed)
+    if not failing:
+        return
+
+    try:
+        provider = create_provider(config.provider)
+    except ValueError as exc:
+        print(f"  skipping escalation: {exc}", file=sys.stderr)
+        return
+
+    print(f"  escalating to provider '{provider.name}' ({len(failing)} check(s) failed)")
+    try:
+        policy = EscalationPolicy(provider)
+        escalation = policy.maybe_escalate(changeset, results)
+    except RuntimeError as exc:
+        print(f"  provider error: {exc}", file=sys.stderr)
+        return
+
+    if escalation is not None:
+        print("  regression test:")
+        for line in escalation.regression_test.splitlines():
+            print(f"    {line}")
+        print("  proposed fix:")
+        for line in escalation.proposed_fix.splitlines():
+            print(f"    {line}")
+
+
 def _cmd_watch(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     config = load_config(root)
@@ -87,6 +136,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
                 f"changeset ready: {len(changeset.paths)} file(s) -> "
                 f"synced {len(touched)} into shadow worktree"
             )
+            if not args.skip_checks:
+                _run_checks_and_maybe_escalate(changeset, worktree, config)
 
         cycle += 1
         if args.max_cycles is None or cycle < args.max_cycles:
@@ -126,6 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="override the poll interval in seconds",
+    )
+    watch_parser.add_argument(
+        "--skip-checks",
+        action="store_true",
+        help="sync change sets into the shadow worktree but don't run checks",
     )
     watch_parser.set_defaults(func=_cmd_watch)
 
