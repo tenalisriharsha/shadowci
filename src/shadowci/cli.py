@@ -1,16 +1,19 @@
 """The `shadowci` command line interface.
 
 Phase 1 wired together the watcher, change-set detector, and shadow
-worktree so the foundation is observable end to end. Phase 2 adds
+worktree so the foundation is observable end to end. Phase 2 added
 deterministic checks (tests/type checker/linter) run in the shadow
-worktree after every stable change set, and escalates to an `LLMProvider`
-only when one of them actually fails. Ghost patches, the interruption
-policy, and the bug-radar TUI arrive in later phases.
+worktree after every stable change set, and escalation to an `LLMProvider`
+only when one of them actually fails. Phase 3 takes what the provider
+writes and verifies it for real inside the shadow worktree, then saves a
+ghost patch to disk that `apply-ghost` can apply to the live tree in one
+command. The interruption policy and the bug-radar TUI arrive later.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 import time
 from pathlib import Path
@@ -19,10 +22,13 @@ from shadowci.changeset import ChangeSetDetector
 from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
 from shadowci.escalation import EscalationPolicy
-from shadowci.events import ChangeSet, CheckResult
+from shadowci.events import ChangeSet, CheckResult, GhostPatch
+from shadowci.ghost import GhostPatchBuilder, GhostPatchError, apply_to_live_tree
 from shadowci.providers import create_provider
 from shadowci.shadow_worktree import ShadowWorktree, ShadowWorktreeError
 from shadowci.watcher import PollingFileWatcher
+
+GHOST_PATCH_DIRNAME = ".shadowci/ghost"
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -74,6 +80,19 @@ def _print_check_result(result: CheckResult) -> None:
             print(f"    {line}")
 
 
+def _ghost_patch_dir(root: Path) -> Path:
+    path = root / GHOST_PATCH_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _save_ghost_patch(patch: GhostPatch, root: Path) -> Path:
+    digest = hashlib.sha1(patch.diff.encode("utf-8")).hexdigest()[:10]
+    patch_path = _ghost_patch_dir(root) / f"{digest}.patch"
+    patch_path.write_text(patch.diff)
+    return patch_path
+
+
 def _run_checks_and_maybe_escalate(
     changeset: ChangeSet, worktree: ShadowWorktree, config: ShadowCIConfig
 ) -> None:
@@ -100,13 +119,33 @@ def _run_checks_and_maybe_escalate(
         print(f"  provider error: {exc}", file=sys.stderr)
         return
 
-    if escalation is not None:
-        print("  regression test:")
-        for line in escalation.regression_test.splitlines():
-            print(f"    {line}")
-        print("  proposed fix:")
-        for line in escalation.proposed_fix.splitlines():
-            print(f"    {line}")
+    if escalation is None:
+        return
+
+    print("  regression test:")
+    for line in escalation.regression_test.splitlines():
+        print(f"    {line}")
+    print("  proposed fix:")
+    for line in escalation.proposed_fix.splitlines():
+        print(f"    {line}")
+
+    print("  verifying fix in shadow worktree...")
+    try:
+        builder = GhostPatchBuilder(worktree)
+        patch = builder.build(
+            changeset,
+            escalation.failing_checks,
+            escalation.regression_test,
+            escalation.proposed_fix,
+        )
+    except GhostPatchError as exc:
+        print(f"  could not verify a ghost patch: {exc}", file=sys.stderr)
+        return
+
+    patch_path = _save_ghost_patch(patch, config.project_root)
+    print(f"  ghost patch verified: {patch.evidence.summary}")
+    print(f"  saved to {patch_path}")
+    print(f"  apply with: shadowci apply-ghost {patch_path}")
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
@@ -143,6 +182,25 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         if args.max_cycles is None or cycle < args.max_cycles:
             time.sleep(config.poll_interval_seconds)
 
+    return 0
+
+
+def _cmd_apply_ghost(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+    patch_file = Path(args.patch_file).resolve()
+
+    if not patch_file.is_file():
+        print(f"error: no such patch file: {patch_file}", file=sys.stderr)
+        return 1
+
+    diff = patch_file.read_text()
+    try:
+        apply_to_live_tree(diff, root)
+    except GhostPatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"applied {patch_file} to {root}")
     return 0
 
 
@@ -184,6 +242,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="sync change sets into the shadow worktree but don't run checks",
     )
     watch_parser.set_defaults(func=_cmd_watch)
+
+    apply_parser = subparsers.add_parser(
+        "apply-ghost", help="apply a verified ghost patch to the live tree"
+    )
+    apply_parser.add_argument("patch_file")
+    apply_parser.add_argument("path", nargs="?", default=".")
+    apply_parser.set_defaults(func=_cmd_apply_ghost)
 
     return parser
 

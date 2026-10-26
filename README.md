@@ -16,9 +16,12 @@ ShadowCI asks it to write a regression test and propose a fix.
 
 LLM access is pluggable — a scripted deterministic policy for tests and CI,
 headless `claude -p`, or a local model server (Ollama-compatible) — so the
-whole system runs and is fully testable with no paid API key. Turning a
-confirmed failure into a verified, rebased "ghost patch" you can apply in
-one keystroke is in progress — see [PROGRESS.md](PROGRESS.md).
+whole system runs and is fully testable with no paid API key. When a check
+fails, ShadowCI writes a regression test, applies a proposed fix, and
+re-runs the full suite — all inside the shadow worktree. Only once that's
+verified does it save a "ghost patch": a diff you can apply to your real
+files in one command, `shadowci apply-ghost`, which rebases cleanly onto
+whatever you've edited in the meantime instead of clobbering it.
 
 ## Quick Start
 
@@ -32,6 +35,7 @@ shadowci init                # writes shadowci.toml and creates the shadow workt
 shadowci status               # inspect current configuration
 shadowci watch                 # watch for changes, sync them, run checks, escalate on failure
 shadowci watch --skip-checks    # just watch and sync, skip the check/escalation step
+shadowci apply-ghost <patch>     # apply a verified ghost patch to the live tree
 ```
 
 ## Preview
@@ -54,9 +58,11 @@ all clean, so it stays silent.
 
 ![shadowci watch detecting and syncing a change](docs/screenshots/04-watch-detects-and-syncs.png)
 
-**A real failure escalates** — a targeted test catches the bug, and only
-then does ShadowCI call the LLM provider for a regression test and a
-proposed fix.
+**A real failure escalates** — a targeted test catches the bug, ShadowCI
+calls the LLM provider for a regression test and a proposed fix, then tries
+to verify that fix for real in the shadow worktree before trusting it (here
+the scripted demo provider's placeholder fix doesn't actually apply, so
+ShadowCI reports that honestly instead of offering a broken patch).
 
 ![shadowci watch running checks and escalating on a failure](docs/screenshots/05-watch-checks-and-escalates.png)
 
@@ -65,9 +71,16 @@ repository fails cleanly instead of half-initializing.
 
 ![shadowci init failure path](docs/screenshots/06-init-failure.png)
 
+**`shadowci apply-ghost`** — once a fix is verified (regression test
+written, fix applied, full suite green, all inside the shadow worktree),
+applying it to your real files is one command — and it rebases onto
+whatever you've edited in the meantime instead of clobbering it.
+
+![shadowci apply-ghost applying a verified patch](docs/screenshots/08-apply-ghost.png)
+
 **Test suite** — every module shipped so far is covered.
 
-![shadowci test suite passing](docs/screenshots/07-test-suite.png)
+![shadowci test suite passing](docs/screenshots/09-test-suite.png)
 
 ## How It Works
 
@@ -101,8 +114,8 @@ repository fails cleanly instead of half-initializing.
                                   │            ▼
                                   │ ┌─────────────────────┐
                                   │ │   GhostPatch +       │  diff + evidence
-                                  │ │   EvidenceCard       │  card, rebased onto
-                                  │ └──────────┬───────────┘  current live tree
+                                  │ │   EvidenceCard       │  card, verified in
+                                  │ └──────────┬───────────┘  the shadow worktree
                                   │            ▼
                                   │ ┌─────────────────────┐
                                   └▶│ InterruptionPolicy   │  learns from
@@ -138,10 +151,15 @@ ShadowCI is under active development. Implemented and fully tested so far:
 - Deterministic check runners (pytest, mypy, ruff) with targeted-test
   matching, the `claude-cli` and `local` LLM providers, and an escalation
   policy that calls a provider only after a real check failure (Phase 2).
+- Ghost patches: a provider's regression test and fix are verified for
+  real in the shadow worktree (test must reproduce the bug, fix must apply
+  cleanly, full suite must stay green), then saved as a diff that
+  `shadowci apply-ghost` applies to the live tree in one command, rebasing
+  onto whatever's changed there since (Phase 3).
 
-Ghost patches, the interruption policy, the terminal bug-radar view, and
-the evaluation harness are not built yet — see [PROGRESS.md](PROGRESS.md)
-for the full phased plan.
+The interruption policy, the terminal bug-radar view, and the evaluation
+harness are not built yet — see [PROGRESS.md](PROGRESS.md) for the full
+phased plan.
 
 ## License
 
