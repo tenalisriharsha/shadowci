@@ -230,12 +230,44 @@ def main() -> None:
             browser,
         )
 
-        # 7. test suite, green
+        # 7. apply-ghost — the one-keystroke apply of a verified ghost patch
+        patch_repo = Path(tempfile.gettempdir()) / "shadowci-patch-repo"
+        shutil.rmtree(patch_repo, ignore_errors=True)
+        patch_repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=patch_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Demo User"], cwd=patch_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "demo@example.com"], cwd=patch_repo, check=True)
+        (patch_repo / "calculator.py").write_text("def add(a, b):\n    return a + b + 1\n")
+        subprocess.run(["git", "add", "calculator.py"], cwd=patch_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=patch_repo, check=True)
+        (patch_repo / "fix.patch").write_text(
+            "--- a/calculator.py\n"
+            "+++ b/calculator.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n"
+            "-    return a + b + 1\n"
+            "+    return a + b\n"
+        )
+        cmd = [PYTHON, "-m", "shadowci", "apply-ghost", "fix.patch", "."]
+        result = run(cmd, cwd=patch_repo)
+        shot(
+            render(
+                label(patch_repo),
+                "shadowci apply-ghost fix.patch .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci apply-ghost",
+            ),
+            OUT_DIR / "08-apply-ghost.png",
+            browser,
+        )
+        shutil.rmtree(patch_repo, ignore_errors=True)
+
+        # 8. test suite, green
         cmd = [PYTHON, "-m", "pytest", "-v"]
         result = run(cmd, cwd=REPO_ROOT)
         shot(
             render(label(REPO_ROOT), "python -m pytest -v", result.stdout, result.stderr, result.returncode, "shadowci test suite"),
-            OUT_DIR / "07-test-suite.png",
+            OUT_DIR / "09-test-suite.png",
             browser,
         )
 

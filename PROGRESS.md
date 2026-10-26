@@ -125,9 +125,23 @@ quality can be tuned and regression-tested without a human in the loop.
 - `escalation.py` — `EscalationPolicy`: calls an `LLMProvider` only when at
   least one `CheckResult` in a batch failed; a clean run never costs a
   model call.
-- `cli.py` — `shadowci` command group: `init`, `status`, `watch` (now runs
-  deterministic checks after every stable change set and escalates on
-  failure; `watch --skip-checks` opts back out).
+- `ghost.py` — `GhostPatchBuilder`: turns an escalation's regression test
+  and proposed fix into a verified `GhostPatch`. Writes the test into the
+  shadow worktree and confirms it fails first (or refuses — an unverified
+  test proves nothing); applies the fix with `git apply`; re-runs the full
+  suite (pytest + mypy + ruff) to confirm nothing else regressed; then
+  assembles a single diff (fix + new test file). `apply_to_live_tree` /
+  `check_applies_to_live_tree` apply that diff to the live tree with
+  `git apply`, which rebases onto edits made there in the meantime by
+  matching on context lines — it only refuses when the user's own edits
+  overlap the exact lines being patched, instead of silently clobbering
+  them. `GhostPatchError` covers every verification/apply failure mode.
+- `cli.py` — `shadowci` command group: `init`, `status`, `watch` (runs
+  deterministic checks after every stable change set, escalates on
+  failure, and now builds + saves a ghost patch via `GhostPatchBuilder`
+  when the escalation's fix actually verifies; `watch --skip-checks` opts
+  out of all of it), and `apply-ghost <patch-file>` — the one-command
+  apply of a saved ghost patch to the live tree.
 - `__main__.py` — `python -m shadowci` entry point.
 
 ## Phased Build Plan
@@ -160,12 +174,16 @@ quality can be tuned and regression-tested without a human in the loop.
     back out
   - Full unit test coverage for every module above, all green
 
-- [ ] **Phase 3 — Ghost Patches**
-  - LLM-driven failing-test authoring in the shadow worktree
-  - Fix generation + full regression confirmation inside the shadow worktree
-  - `GhostPatch` + `EvidenceCard` construction
-  - Rebase-onto-live-tree-edits before offering a patch
-  - One-keystroke apply-to-live-files flow
+- [x] **Phase 3 — Ghost Patches**
+  - LLM-driven failing-test authoring in the shadow worktree, with the test
+    required to actually reproduce the failure before anything proceeds
+  - Fix generation (`git apply` inside the shadow worktree) + full
+    regression confirmation (pytest + mypy + ruff all green afterward)
+  - `GhostPatch` + `EvidenceCard` construction from a real verified diff
+  - Rebase-onto-live-tree-edits before offering a patch (`git apply`'s
+    context-line matching tolerates unrelated edits, refuses on overlap)
+  - One-command apply-to-live-files flow (`shadowci apply-ghost`)
+  - Full unit test coverage for every module above, all green
 
 - [ ] **Phase 4 — Interruption Policy**
   - Accept / reject / ignore signal recording
@@ -184,22 +202,34 @@ quality can be tuned and regression-tested without a human in the loop.
 
 ## Where to resume
 
-**Next session: start Phase 3 (Ghost Patches).** Phases 1 and 2 are
+**Next session: start Phase 4 (Interruption Policy).** Phases 1–3 are
 complete — scaffold, core data models, polling watcher, change-set
 detector, shadow worktree manager, the full `checks/` package
 (pytest/mypy/ruff/targeted), the `claude-cli`/`local`/`scripted` providers,
-`EscalationPolicy`, and a `watch` command that runs checks and escalates on
-failure are all implemented and fully tested (see `tests/`).
+`EscalationPolicy`, `GhostPatchBuilder` (verified test + fix + full-suite
+confirmation + rebased diff), a `watch` command that runs checks, escalates
+on failure, and now saves a verified ghost patch to `.shadowci/ghost/` when
+one checks out, and `apply-ghost` to apply one to the live tree — all
+implemented and fully tested (see `tests/`).
 
-Right now `EscalationPolicy` only asks a provider for a regression test and
-a fix diff and prints them — nothing is applied anywhere. Phase 3 needs to:
-take the regression test the provider wrote, actually add it to the shadow
-worktree and confirm it reproduces the failure; apply the proposed fix
-there too and re-run the full suite to confirm nothing else regressed; only
-then construct a `GhostPatch` + `EvidenceCard` (both already modeled in
-`events.py`) from a real diff between the shadow worktree and the live
-tree; and rebase that diff onto whatever the user has edited in the live
-tree meanwhile before it's considered ready to offer. The one-keystroke
-apply-to-live-files flow is the last piece of that phase.
+Right now every escalation is treated identically: a verified ghost patch
+is always saved and the path printed, with no sense of which fixes are
+worth interrupting the user for versus which should stay silent until
+asked. Phase 4 needs to: add `Signal` recording (accept/reject/ignore —
+`Signal` enum already exists in `events.py`) persisted somewhere durable
+(likely a small JSON/SQLite store under `.shadowci/`); a scoring model that
+starts biased toward silence and adjusts from recorded signal history; and
+a way to evaluate the policy against a recorded signal history so it's
+regression-tested like everything else. `watch`/`apply-ghost` will need a
+way to record the signal when a patch is applied (accept) vs. left on disk
+unapplied (eventually ignore) vs. explicitly discarded (reject) — the CLI
+surface for that is also part of this phase.
+
+A known limitation from Phase 3: if a fix applies but the full-suite
+regression check fails afterward, the shadow worktree is left with the fix
+still applied (only the generated test file is cleaned up) — it'll be
+overwritten on the next `sync()` anyway, but it's not an explicit revert.
+Worth a cleanup pass if the shadow worktree ever needs to be trusted
+mid-failure for something else.
 
 STATUS: IN_PROGRESS
