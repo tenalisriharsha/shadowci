@@ -61,6 +61,7 @@ def test_build_produces_a_verified_ghost_patch(git_repo: Path):
     assert "test_add_regression" in patch.diff
     assert patch.evidence.all_checks_passed
     assert patch.evidence.failing_test_before == _REGRESSION_TEST
+    assert patch.evidence.originally_failed_checks == ("pytest-targeted",)
     assert patch.changeset == changeset
 
 

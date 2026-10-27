@@ -127,6 +127,7 @@ class GhostPatchBuilder:
             summary=_summarize(changeset, failing_checks),
             failing_test_before=regression_test,
             check_results=confirmation,
+            originally_failed_checks=tuple(result.name for result in failing_checks),
         )
         return GhostPatch(diff=diff, evidence=evidence, changeset=changeset)
 

@@ -11,6 +11,8 @@ def test_defaults_are_sensible(tmp_path: Path):
     assert config.debounce_seconds > 0
     assert config.idle_seconds > config.debounce_seconds
     assert config.provider == "scripted"
+    assert config.interruption_threshold > 0
+    assert config.interruption_min_signals >= 1
 
 
 def test_load_config_reads_toml_overrides(tmp_path: Path):
@@ -21,6 +23,8 @@ def test_load_config_reads_toml_overrides(tmp_path: Path):
         "idle_seconds = 5.0\n"
         'provider = "claude-headless"\n'
         'watch_extensions = [".py", ".ts"]\n'
+        "interruption_threshold = 0.5\n"
+        "interruption_min_signals = 3\n"
     )
     config = load_config(tmp_path)
     assert config.shadow_path == tmp_path / "custom" / "shadow"
@@ -28,6 +32,8 @@ def test_load_config_reads_toml_overrides(tmp_path: Path):
     assert config.idle_seconds == 5.0
     assert config.provider == "claude-headless"
     assert config.watch_extensions == (".py", ".ts")
+    assert config.interruption_threshold == 0.5
+    assert config.interruption_min_signals == 3
 
 
 def test_should_watch_respects_extension_and_ignore_dirs():
