@@ -136,12 +136,30 @@ quality can be tuned and regression-tested without a human in the loop.
   matching on context lines — it only refuses when the user's own edits
   overlap the exact lines being patched, instead of silently clobbering
   them. `GhostPatchError` covers every verification/apply failure mode.
+- `signals.py` — `SignalStore`: appends/loads `SignalRecord`s (fingerprint,
+  `Signal`, patch digest, timestamp) to/from a flat JSON file under
+  `.shadowci/signals.json` — the durable history the interruption policy
+  scores against.
+- `interruption.py` — `fingerprint_for_patch`: a stable key for "this kind
+  of fix" built from the checks that originally failed (recorded on
+  `EvidenceCard.originally_failed_checks`, added in Phase 4). policy
+  starts biased toward silence — a fingerprint with no history, or fewer
+  than `min_signals` records, never interrupts; once there's enough,
+  `score = (accepts - rejects) / total` and the patch is surfaced only if
+  that score clears `threshold`. `ignore` signals count toward the sample
+  size but don't push the score either way.
 - `cli.py` — `shadowci` command group: `init`, `status`, `watch` (runs
   deterministic checks after every stable change set, escalates on
-  failure, and now builds + saves a ghost patch via `GhostPatchBuilder`
-  when the escalation's fix actually verifies; `watch --skip-checks` opts
-  out of all of it), and `apply-ghost <patch-file>` — the one-command
-  apply of a saved ghost patch to the live tree.
+  failure, builds + saves a ghost patch via `GhostPatchBuilder` when the
+  escalation's fix actually verifies — alongside a `.json` metadata
+  sidecar carrying the patch's fingerprint — then reports the
+  `InterruptionPolicy`'s verdict for it; `watch --skip-checks` opts out of
+  all of it), `apply-ghost <patch-file>` (applies a saved ghost patch to
+  the live tree and records an `accept` signal when a metadata sidecar is
+  present), `reject-ghost <patch-file>` (discards the patch, records
+  `reject`), `ignore-ghost <patch-file>` (leaves the patch on disk,
+  records `ignore`), and `signals` (prints per-fingerprint accept/reject/
+  ignore counts and the policy's current verdict for each).
 - `__main__.py` — `python -m shadowci` entry point.
 
 ## Phased Build Plan
@@ -185,10 +203,21 @@ quality can be tuned and regression-tested without a human in the loop.
   - One-command apply-to-live-files flow (`shadowci apply-ghost`)
   - Full unit test coverage for every module above, all green
 
-- [ ] **Phase 4 — Interruption Policy**
-  - Accept / reject / ignore signal recording
-  - Learned scoring model that keeps default behavior silent
-  - Policy evaluation against recorded signal history
+- [x] **Phase 4 — Interruption Policy**
+  - `Signal` (accept/reject/ignore) recording via `SignalStore`, a durable
+    JSON history under `.shadowci/signals.json`
+  - `EvidenceCard.originally_failed_checks` + `fingerprint_for_patch` give
+    every ghost patch a stable key for "this kind of fix"
+  - `InterruptionPolicy` — a deterministic scoring model, silent by
+    default (no/too-little history never interrupts), that scores
+    `(accepts - rejects) / total` against recorded history per fingerprint
+  - `watch` reports the policy's verdict (surface vs. stay silent) for
+    every verified ghost patch, alongside the saved patch + metadata
+    sidecar; `apply-ghost` / `reject-ghost` / `ignore-ghost` are the CLI
+    surface that records each signal; `signals` reports the running tally
+    and current verdict per fingerprint — this doubles as evaluating the
+    policy against recorded history
+  - Full unit test coverage for every module above, all green
 
 - [ ] **Phase 5 — Bug-Radar TUI**
   - Terminal dashboard (watched files, in-flight change sets, check status,
@@ -202,28 +231,31 @@ quality can be tuned and regression-tested without a human in the loop.
 
 ## Where to resume
 
-**Next session: start Phase 4 (Interruption Policy).** Phases 1–3 are
-complete — scaffold, core data models, polling watcher, change-set
-detector, shadow worktree manager, the full `checks/` package
-(pytest/mypy/ruff/targeted), the `claude-cli`/`local`/`scripted` providers,
-`EscalationPolicy`, `GhostPatchBuilder` (verified test + fix + full-suite
-confirmation + rebased diff), a `watch` command that runs checks, escalates
-on failure, and now saves a verified ghost patch to `.shadowci/ghost/` when
-one checks out, and `apply-ghost` to apply one to the live tree — all
-implemented and fully tested (see `tests/`).
+**Next session: start Phase 5 (Bug-Radar TUI).** Phases 1–4 are complete —
+scaffold, core data models, polling watcher, change-set detector, shadow
+worktree manager, the full `checks/` package (pytest/mypy/ruff/targeted),
+the `claude-cli`/`local`/`scripted` providers, `EscalationPolicy`,
+`GhostPatchBuilder` (verified test + fix + full-suite confirmation +
+rebased diff), `SignalStore` + `InterruptionPolicy` (deterministic,
+silent-by-default scoring over recorded accept/reject/ignore history), and
+a `watch` command that runs checks, escalates on failure, saves a verified
+ghost patch plus a fingerprint metadata sidecar, and reports the
+interruption policy's verdict for it — plus `apply-ghost` / `reject-ghost`
+/ `ignore-ghost` / `signals` to record signals and inspect the running
+tally — all implemented and fully tested (see `tests/`).
 
-Right now every escalation is treated identically: a verified ghost patch
-is always saved and the path printed, with no sense of which fixes are
-worth interrupting the user for versus which should stay silent until
-asked. Phase 4 needs to: add `Signal` recording (accept/reject/ignore —
-`Signal` enum already exists in `events.py`) persisted somewhere durable
-(likely a small JSON/SQLite store under `.shadowci/`); a scoring model that
-starts biased toward silence and adjusts from recorded signal history; and
-a way to evaluate the policy against a recorded signal history so it's
-regression-tested like everything else. `watch`/`apply-ghost` will need a
-way to record the signal when a patch is applied (accept) vs. left on disk
-unapplied (eventually ignore) vs. explicitly discarded (reject) — the CLI
-surface for that is also part of this phase.
+Right now `watch` is a synchronous polling loop that prints everything to
+stdout as it happens — useful for demos and CI, but not an ambient view a
+developer would leave open. Phase 5 needs to: build a terminal dashboard
+(likely `curses` or a small dependency-free render loop, consistent with
+the project's no-mandatory-dependencies stance so far) that shows watched
+files, in-flight change sets, live check status, and a list of pending
+ghost patches with their interruption-policy verdict (surfaced vs.
+silent); and wire `accept`/`reject`/`ignore` keybindings in the TUI to the
+same `SignalStore` / `apply-ghost` / `reject-ghost` / `ignore-ghost` logic
+`cli.py` already has, rather than duplicating it. The existing `watch`
+command's plain-text mode should stay available (e.g. behind a flag) since
+it's what the test suite and CI screenshots exercise headlessly.
 
 A known limitation from Phase 3: if a fix applies but the full-suite
 regression check fails afterward, the shadow worktree is left with the fix
@@ -231,5 +263,15 @@ still applied (only the generated test file is cleaned up) — it'll be
 overwritten on the next `sync()` anyway, but it's not an explicit revert.
 Worth a cleanup pass if the shadow worktree ever needs to be trusted
 mid-failure for something else.
+
+A known limitation from Phase 4: the interruption policy's fingerprint is
+only the sorted set of originally-failed check names (e.g.
+`"pytest-targeted"` or `"mypy,pytest"`) — it doesn't yet distinguish fixes
+by file, project area, or bug shape within the same check. That's a
+deliberately small first cut; a richer fingerprint (e.g. including touched
+file extensions or paths) would need matching history to actually
+accumulate signal per bucket, which isn't worth the complexity until the
+Phase 6 evaluation harness can measure whether it actually improves
+precision.
 
 STATUS: IN_PROGRESS

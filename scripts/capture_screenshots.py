@@ -271,6 +271,115 @@ def main() -> None:
             browser,
         )
 
+        # 9-12. the interruption policy: accept/reject/ignore signals feed a
+        # per-fingerprint score that decides whether a future fix like this
+        # one gets surfaced or stays quiet on disk.
+        signals_repo = Path(tempfile.gettempdir()) / "shadowci-signals-repo"
+        shutil.rmtree(signals_repo, ignore_errors=True)
+        signals_repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=signals_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Demo User"], cwd=signals_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "demo@example.com"], cwd=signals_repo, check=True)
+        baseline = "def add(a, b):\n    return a + b\n"
+        (signals_repo / "app.py").write_text(baseline)
+        subprocess.run(["git", "add", "app.py"], cwd=signals_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=signals_repo, check=True)
+
+        accept_fix = (
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n"
+            "-    return a + b\n"
+            "+    return a + b  # verified fix\n"
+        )
+
+        def write_patch(name: str, diff: str, fingerprint: str, digest: str) -> Path:
+            patch_path = signals_repo / name
+            patch_path.write_text(diff)
+            patch_path.with_suffix(".json").write_text(
+                f'{{"digest": "{digest}", "fingerprint": "{fingerprint}", "summary": "demo fix"}}'
+            )
+            return patch_path
+
+        # Build up three accepted signals for "pytest-targeted" — the first
+        # is the one we screenshot, the other two just add to its history.
+        for i in range(3):
+            (signals_repo / "app.py").write_text(baseline)
+            patch_path = write_patch(f"accept{i}.patch", accept_fix, "pytest-targeted", f"a{i}")
+            cmd = [PYTHON, "-m", "shadowci", "apply-ghost", patch_path.name, "."]
+            result = run(cmd, cwd=signals_repo)
+            if i == 0:
+                shot(
+                    render(
+                        label(signals_repo),
+                        f"shadowci apply-ghost {patch_path.name} .",
+                        result.stdout, result.stderr, result.returncode,
+                        "shadowci apply-ghost (records an accept signal)",
+                    ),
+                    OUT_DIR / "10-apply-ghost-accept-signal.png",
+                    browser,
+                )
+
+        # One rejected signal for the same fingerprint.
+        reject_patch = write_patch(
+            "reject0.patch",
+            "--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n-    return a + b  # verified fix\n+    return a + b  # alt fix\n",
+            "pytest-targeted",
+            "r0",
+        )
+        cmd = [PYTHON, "-m", "shadowci", "reject-ghost", reject_patch.name, "."]
+        result = run(cmd, cwd=signals_repo)
+        shot(
+            render(
+                label(signals_repo),
+                f"shadowci reject-ghost {reject_patch.name} .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci reject-ghost",
+            ),
+            OUT_DIR / "11-reject-ghost.png",
+            browser,
+        )
+
+        # One ignored signal for a different fingerprint — not enough
+        # history yet for the policy to form an opinion either way.
+        ignore_patch = write_patch(
+            "ignore0.patch",
+            "--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n-    return a + b  # verified fix\n+    return a + b  # type-fix\n",
+            "mypy",
+            "i0",
+        )
+        cmd = [PYTHON, "-m", "shadowci", "ignore-ghost", ignore_patch.name, "."]
+        result = run(cmd, cwd=signals_repo)
+        shot(
+            render(
+                label(signals_repo),
+                f"shadowci ignore-ghost {ignore_patch.name} .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci ignore-ghost",
+            ),
+            OUT_DIR / "12-ignore-ghost.png",
+            browser,
+        )
+
+        # The aggregate view: per-fingerprint counts and the policy's
+        # current verdict for each.
+        cmd = [PYTHON, "-m", "shadowci", "signals", "."]
+        result = run(cmd, cwd=signals_repo)
+        shot(
+            render(
+                label(signals_repo),
+                "shadowci signals .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci signals",
+            ),
+            OUT_DIR / "13-signals.png",
+            browser,
+        )
+        shutil.rmtree(signals_repo, ignore_errors=True)
+
         browser.close()
 
     shutil.rmtree(demo_repo, ignore_errors=True)

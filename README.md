@@ -23,6 +23,14 @@ verified does it save a "ghost patch": a diff you can apply to your real
 files in one command, `shadowci apply-ghost`, which rebases cleanly onto
 whatever you've edited in the meantime instead of clobbering it.
 
+Every verified patch also feeds an interruption policy: `apply-ghost`,
+`reject-ghost`, and `ignore-ghost` each record what you actually did with a
+fix, grouped by the kind of check that originally failed. With no history
+for that kind of fix yet, ShadowCI stays quiet by default — it only
+flags a patch as worth surfacing once enough accepted fixes of that kind
+show it's wanted. `shadowci signals` shows the running tally and the
+policy's current verdict for each kind of fix.
+
 ## Quick Start
 
 ```bash
@@ -35,7 +43,10 @@ shadowci init                # writes shadowci.toml and creates the shadow workt
 shadowci status               # inspect current configuration
 shadowci watch                 # watch for changes, sync them, run checks, escalate on failure
 shadowci watch --skip-checks    # just watch and sync, skip the check/escalation step
-shadowci apply-ghost <patch>     # apply a verified ghost patch to the live tree
+shadowci apply-ghost <patch>     # apply a verified ghost patch to the live tree (records "accept")
+shadowci reject-ghost <patch>     # discard a saved patch (records "reject")
+shadowci ignore-ghost <patch>      # leave a saved patch unapplied (records "ignore")
+shadowci signals                    # show recorded signal history and current policy scores
 ```
 
 ## Preview
@@ -77,6 +88,31 @@ applying it to your real files is one command — and it rebases onto
 whatever you've edited in the meantime instead of clobbering it.
 
 ![shadowci apply-ghost applying a verified patch](docs/screenshots/08-apply-ghost.png)
+
+**`shadowci apply-ghost` records an accept signal** — applying a patch is
+itself positive feedback: the interruption policy remembers it against the
+kind of fix this was (here, a failing targeted test).
+
+![shadowci apply-ghost recording an accept signal](docs/screenshots/10-apply-ghost-accept-signal.png)
+
+**`shadowci reject-ghost`** — explicitly discarding a patch records a
+reject signal and removes it from disk, pulling that kind of fix's score
+down.
+
+![shadowci reject-ghost discarding a patch](docs/screenshots/11-reject-ghost.png)
+
+**`shadowci ignore-ghost`** — leaving a patch unapplied records an ignore
+signal without deleting it, so a pattern the user never acts on eventually
+earns a verdict instead of being inferred as a weak accept.
+
+![shadowci ignore-ghost recording a signal](docs/screenshots/12-ignore-ghost.png)
+
+**`shadowci signals`** — the aggregate view: per-fingerprint accept/reject/
+ignore counts and the interruption policy's current verdict for each. One
+kind of fix has enough accepted history to be surfaced automatically; the
+other hasn't been seen enough times yet, so it stays silent.
+
+![shadowci signals showing per-fingerprint scores](docs/screenshots/13-signals.png)
 
 **Test suite** — every module shipped so far is covered.
 
@@ -156,10 +192,14 @@ ShadowCI is under active development. Implemented and fully tested so far:
   cleanly, full suite must stay green), then saved as a diff that
   `shadowci apply-ghost` applies to the live tree in one command, rebasing
   onto whatever's changed there since (Phase 3).
+- Interruption policy: `apply-ghost` / `reject-ghost` / `ignore-ghost`
+  record accept/reject/ignore signals grouped by the kind of check that
+  originally failed; a deterministic, silent-by-default scoring model
+  decides whether a future fix of that kind is worth surfacing, and
+  `shadowci signals` reports the running tally and verdict (Phase 4).
 
-The interruption policy, the terminal bug-radar view, and the evaluation
-harness are not built yet — see [PROGRESS.md](PROGRESS.md) for the full
-phased plan.
+The terminal bug-radar view and the evaluation harness are not built yet —
+see [PROGRESS.md](PROGRESS.md) for the full phased plan.
 
 ## License
 
