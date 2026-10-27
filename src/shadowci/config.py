@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shadowci.interruption import DEFAULT_MIN_SIGNALS, DEFAULT_THRESHOLD
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - exercised only on Python < 3.11
@@ -42,6 +44,8 @@ class ShadowCIConfig:
     idle_seconds: float = 2.0
     poll_interval_seconds: float = 0.25
     provider: str = "scripted"
+    interruption_threshold: float = DEFAULT_THRESHOLD
+    interruption_min_signals: int = DEFAULT_MIN_SIGNALS
 
     @property
     def shadow_path(self) -> Path:
@@ -87,5 +91,9 @@ def load_config(project_root: Path | None = None) -> ShadowCIConfig:
         kwargs["poll_interval_seconds"] = float(section["poll_interval_seconds"])
     if "provider" in section:
         kwargs["provider"] = str(section["provider"])
+    if "interruption_threshold" in section:
+        kwargs["interruption_threshold"] = float(section["interruption_threshold"])
+    if "interruption_min_signals" in section:
+        kwargs["interruption_min_signals"] = int(section["interruption_min_signals"])
 
     return ShadowCIConfig(**kwargs)

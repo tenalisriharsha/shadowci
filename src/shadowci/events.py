@@ -67,6 +67,7 @@ class EvidenceCard:
     summary: str
     failing_test_before: str
     check_results: tuple[CheckResult, ...] = ()
+    originally_failed_checks: tuple[str, ...] = ()
 
     @property
     def all_checks_passed(self) -> bool:

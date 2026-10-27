@@ -222,11 +222,14 @@ def test_watch_builds_and_saves_a_ghost_patch_on_a_verified_fix(git_repo: Path, 
 
     assert result.get("code") == 0
     assert "ghost patch verified" in out
+    assert "interruption policy: staying silent" in out
     assert "apply with: shadowci apply-ghost" in out
 
     ghost_dir = git_repo / ".shadowci" / "ghost"
     patches = list(ghost_dir.glob("*.patch"))
     assert len(patches) == 1
+    metadata_files = list(ghost_dir.glob("*.json"))
+    assert len(metadata_files) == 1
 
 
 def test_apply_ghost_applies_a_saved_patch_to_the_live_tree(git_repo: Path, capsys):
@@ -273,6 +276,121 @@ def test_apply_ghost_reports_a_patch_that_no_longer_applies(git_repo: Path, caps
     assert exit_code == 1
     assert "error:" in captured.err
     assert (git_repo / "app.py").read_text() == "def add(a, b):\n    return a + b\n"
+
+
+def _write_patch_with_metadata(
+    git_repo: Path, fingerprint: str = "pytest-targeted"
+) -> Path:
+    patch_file = git_repo / "fix.patch"
+    patch_file.write_text(
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def add(a, b):\n"
+        "-    return a + b\n"
+        "+    return a + b  # fixed\n"
+    )
+    patch_file.with_suffix(".json").write_text(
+        f'{{"digest": "abc123", "fingerprint": "{fingerprint}", "summary": "test fix"}}'
+    )
+    return patch_file
+
+
+def test_apply_ghost_records_an_accept_signal_when_metadata_is_present(git_repo: Path, capsys):
+    patch_file = _write_patch_with_metadata(git_repo)
+
+    exit_code = main(["apply-ghost", str(patch_file), str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "recorded signal: accept" in out
+
+    signals_path = git_repo / ".shadowci" / "signals.json"
+    assert signals_path.exists()
+    assert '"signal": "accept"' in signals_path.read_text()
+
+
+def test_apply_ghost_skips_signal_recording_without_metadata(git_repo: Path, capsys):
+    patch_file = git_repo / "fix.patch"
+    patch_file.write_text(
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def add(a, b):\n"
+        "-    return a + b\n"
+        "+    return a + b  # fixed\n"
+    )
+
+    exit_code = main(["apply-ghost", str(patch_file), str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "recorded signal" not in out
+    assert not (git_repo / ".shadowci" / "signals.json").exists()
+
+
+def test_reject_ghost_discards_the_patch_and_records_a_reject_signal(git_repo: Path, capsys):
+    patch_file = _write_patch_with_metadata(git_repo)
+
+    exit_code = main(["reject-ghost", str(patch_file), str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "recorded signal: reject" in out
+    assert "discarded" in out
+    assert not patch_file.exists()
+    assert not patch_file.with_suffix(".json").exists()
+
+    signals_path = git_repo / ".shadowci" / "signals.json"
+    assert '"signal": "reject"' in signals_path.read_text()
+
+
+def test_reject_ghost_reports_a_missing_patch_file(git_repo: Path, capsys):
+    exit_code = main(["reject-ghost", str(git_repo / "nope.patch"), str(git_repo)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "no such patch file" in captured.err
+
+
+def test_ignore_ghost_records_a_signal_and_leaves_the_patch_on_disk(git_repo: Path, capsys):
+    patch_file = _write_patch_with_metadata(git_repo)
+
+    exit_code = main(["ignore-ghost", str(patch_file), str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "recorded signal: ignore" in out
+    assert patch_file.exists()
+
+    signals_path = git_repo / ".shadowci" / "signals.json"
+    assert '"signal": "ignore"' in signals_path.read_text()
+
+
+def test_signals_reports_nothing_recorded_yet(git_repo: Path, capsys):
+    exit_code = main(["signals", str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "no signals recorded yet" in out
+
+
+def test_signals_reports_counts_and_policy_verdict(git_repo: Path, capsys):
+    patch_file = _write_patch_with_metadata(git_repo, fingerprint="pytest-targeted")
+    main(["apply-ghost", str(patch_file), str(git_repo)])
+    capsys.readouterr()
+
+    (git_repo / "app.py").write_text("def add(a, b):\n    return a + b\n")
+    patch_file = _write_patch_with_metadata(git_repo, fingerprint="pytest-targeted")
+    main(["apply-ghost", str(patch_file), str(git_repo)])
+    capsys.readouterr()
+
+    exit_code = main(["signals", str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "pytest-targeted: 2 accept(s), 0 reject(s), 0 ignore(s)" in out
+    assert "would surface" in out
 
 
 def test_watch_reports_provider_errors_without_crashing(git_repo: Path, capsys, monkeypatch):

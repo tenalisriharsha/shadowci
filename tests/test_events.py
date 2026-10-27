@@ -53,3 +53,8 @@ def test_ghost_patch_bundles_diff_and_evidence():
 
 def test_signal_values():
     assert {s.value for s in Signal} == {"accept", "reject", "ignore"}
+
+
+def test_evidence_card_originally_failed_checks_defaults_to_empty():
+    card = EvidenceCard(summary="fix", failing_test_before="x")
+    assert card.originally_failed_checks == ()
