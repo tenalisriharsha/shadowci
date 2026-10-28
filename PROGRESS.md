@@ -148,18 +148,60 @@ quality can be tuned and regression-tested without a human in the loop.
   `score = (accepts - rejects) / total` and the patch is surfaced only if
   that score clears `threshold`. `ignore` signals count toward the sample
   size but don't push the score either way.
+- `pipeline.py` — the UI-free core the rest of the system is built on:
+  `ghost_patch_dir` / `signal_store` / `metadata_path` / `load_patch_metadata`
+  / `save_ghost_patch` (the `.shadowci/ghost/*.patch` + `.json` sidecar
+  layout), `run_checks_and_maybe_escalate` (checks → escalate → verify →
+  save, as a `PipelineOutcome` instead of print statements — the exact
+  logic `watch` used to inline), and `accept_patch` / `reject_patch` /
+  `ignore_patch` (apply-to-live-tree-or-discard + record the signal, as an
+  `ActionResult`). Both `cli.py` (printing the result) and `radar.py` /
+  `tui.py` (rendering the result) call into this one copy — `cli.py`'s
+  `apply-ghost` and the Bug-Radar `a` keybinding are the same function
+  call underneath. `accept_patch` now also removes the patch + its
+  metadata sidecar once applied, so an accepted patch stops showing up as
+  "pending" anywhere (CLI or dashboard) — a gap Phase 4 left open since
+  nothing surfaced the pending list as a first-class view until now.
+- `radar.py` — the Bug-Radar's state layer. `RadarState` is one snapshot
+  of the whole pipeline (recent file events, pending change-set count,
+  last check results, pending ghost patches with a fresh
+  `InterruptionDecision` each, a bounded scrolling log).
+  `scan_pending_patches` rebuilds the pending-patch list from
+  `.shadowci/ghost/*.patch` + sidecar on every call — rescanned from disk,
+  not cached, so a patch handled from another terminal (plain
+  `apply-ghost` while the dashboard is open) shows up correctly on the
+  next render with no shared state to keep in sync. `RadarEngine` wraps
+  the same `PollingFileWatcher` / `ChangeSetDetector` / `ShadowWorktree`
+  `watch` uses; `.step()` drives one poll cycle and returns a `RadarState`
+  instead of printing; `.note()` / `.refresh_patches()` give instant
+  feedback right after a keybinding without waiting for the next poll.
+  `render_lines(state, selected)` turns a snapshot into plain text with no
+  `curses` dependency, so the dashboard's content is unit-testable as
+  plain text.
+- `tui.py` — the thin `curses` loop over `radar.py`: polls
+  `RadarEngine.step()` on a timer (`stdscr.timeout`), renders
+  `radar.render_lines()` each frame, and turns `a`/`r`/`i` keypresses into
+  `pipeline.accept_patch` / `reject_patch` / `ignore_patch` calls on the
+  selected pending patch — `j`/`k` move the selection, `q` quits.
+  `_handle_key` and `_render` take a duck-typed window argument so they're
+  testable without a real terminal (no `curses.wrapper`/`initscr` needed);
+  only `run()` touches real `curses`.
 - `cli.py` — `shadowci` command group: `init`, `status`, `watch` (runs
   deterministic checks after every stable change set, escalates on
   failure, builds + saves a ghost patch via `GhostPatchBuilder` when the
   escalation's fix actually verifies — alongside a `.json` metadata
   sidecar carrying the patch's fingerprint — then reports the
   `InterruptionPolicy`'s verdict for it; `watch --skip-checks` opts out of
-  all of it), `apply-ghost <patch-file>` (applies a saved ghost patch to
-  the live tree and records an `accept` signal when a metadata sidecar is
-  present), `reject-ghost <patch-file>` (discards the patch, records
-  `reject`), `ignore-ghost <patch-file>` (leaves the patch on disk,
-  records `ignore`), and `signals` (prints per-fingerprint accept/reject/
-  ignore counts and the policy's current verdict for each).
+  all of it), `radar` (launches the Bug-Radar `curses` dashboard over the
+  same pipeline — `tui.run`), `apply-ghost <patch-file>` (applies a saved
+  ghost patch to the live tree and records an `accept` signal when a
+  metadata sidecar is present), `reject-ghost <patch-file>` (discards the
+  patch, records `reject`), `ignore-ghost <patch-file>` (leaves the patch
+  on disk, records `ignore`), and `signals` (prints per-fingerprint
+  accept/reject/ignore counts and the policy's current verdict for each).
+  `watch` and `apply-ghost`/`reject-ghost`/`ignore-ghost` are now thin
+  printers over `pipeline.py`'s functions rather than owning the logic
+  themselves.
 - `__main__.py` — `python -m shadowci` entry point.
 
 ## Phased Build Plan
@@ -219,9 +261,25 @@ quality can be tuned and regression-tested without a human in the loop.
     policy against recorded history
   - Full unit test coverage for every module above, all green
 
-- [ ] **Phase 5 — Bug-Radar TUI**
-  - Terminal dashboard (watched files, in-flight change sets, check status,
-    pending ghost patches)
+- [x] **Phase 5 — Bug-Radar TUI**
+  - `pipeline.py`: extracted the check-escalate-verify-save pipeline and
+    the ghost-patch disk layout (`.shadowci/ghost/*.patch` + `.json`
+    sidecar, `.shadowci/signals.json`) out of `cli.py` into UI-free
+    functions returning structured results, so a second driver (the TUI)
+    doesn't duplicate that logic — only renders it differently
+  - `radar.py`: `RadarState` snapshots (watched files, in-flight change
+    sets, live check status, pending ghost patches with a live
+    `InterruptionDecision` each) driven by `RadarEngine.step()`, plus a
+    pure `render_lines()` with no `curses` dependency
+  - `tui.py`: a `curses` dashboard over `radar.py` — `a`/`r`/`i` accept/
+    reject/ignore the selected pending patch through the exact same
+    `pipeline.accept_patch` / `reject_patch` / `ignore_patch` the
+    `apply-ghost` / `reject-ghost` / `ignore-ghost` CLI commands call;
+    `j`/`k` move the selection, `q` quits
+  - `shadowci radar` launches it; `shadowci watch`'s plain-text mode is
+    unchanged and still what the test suite and CI screenshots exercise
+    headlessly
+  - Full unit test coverage for every module above, all green (129 tests)
 
 - [ ] **Phase 6 — Evaluation Harness**
   - Session recording/replay format
@@ -231,31 +289,35 @@ quality can be tuned and regression-tested without a human in the loop.
 
 ## Where to resume
 
-**Next session: start Phase 5 (Bug-Radar TUI).** Phases 1–4 are complete —
-scaffold, core data models, polling watcher, change-set detector, shadow
-worktree manager, the full `checks/` package (pytest/mypy/ruff/targeted),
-the `claude-cli`/`local`/`scripted` providers, `EscalationPolicy`,
-`GhostPatchBuilder` (verified test + fix + full-suite confirmation +
-rebased diff), `SignalStore` + `InterruptionPolicy` (deterministic,
-silent-by-default scoring over recorded accept/reject/ignore history), and
-a `watch` command that runs checks, escalates on failure, saves a verified
-ghost patch plus a fingerprint metadata sidecar, and reports the
-interruption policy's verdict for it — plus `apply-ghost` / `reject-ghost`
-/ `ignore-ghost` / `signals` to record signals and inspect the running
-tally — all implemented and fully tested (see `tests/`).
+**Next session: start Phase 6 (Evaluation Harness).** Phases 1–5 are
+complete — scaffold, core data models, polling watcher, change-set
+detector, shadow worktree manager, the full `checks/` package
+(pytest/mypy/ruff/targeted), the `claude-cli`/`local`/`scripted`
+providers, `EscalationPolicy`, `GhostPatchBuilder` (verified test + fix +
+full-suite confirmation + rebased diff), `SignalStore` +
+`InterruptionPolicy` (deterministic, silent-by-default scoring over
+recorded accept/reject/ignore history), a `watch` command that runs
+checks, escalates on failure, saves a verified ghost patch plus a
+fingerprint metadata sidecar, and reports the interruption policy's
+verdict for it, `apply-ghost` / `reject-ghost` / `ignore-ghost` /
+`signals` to record signals and inspect the running tally, and now
+`radar` — a `curses` terminal dashboard (`radar.py` state layer + `tui.py`
+render loop) over the exact same pipeline, with `a`/`r`/`i` keybindings
+wired to the same `pipeline.accept_patch` / `reject_patch` / `ignore_patch`
+functions the plain CLI commands call — all implemented and fully tested
+(see `tests/`, 129 tests green).
 
-Right now `watch` is a synchronous polling loop that prints everything to
-stdout as it happens — useful for demos and CI, but not an ambient view a
-developer would leave open. Phase 5 needs to: build a terminal dashboard
-(likely `curses` or a small dependency-free render loop, consistent with
-the project's no-mandatory-dependencies stance so far) that shows watched
-files, in-flight change sets, live check status, and a list of pending
-ghost patches with their interruption-policy verdict (surfaced vs.
-silent); and wire `accept`/`reject`/`ignore` keybindings in the TUI to the
-same `SignalStore` / `apply-ghost` / `reject-ghost` / `ignore-ghost` logic
-`cli.py` already has, rather than duplicating it. The existing `watch`
-command's plain-text mode should stay available (e.g. behind a flag) since
-it's what the test suite and CI screenshots exercise headlessly.
+Phase 6 is the evaluation harness described in the vision doc: a session
+recording/replay format (timestamped file-save sequences, probably a
+flat JSON/JSONL format mirroring `FileChangeEvent`), synthetic bug
+injection into a replayed session, and a report command that runs a
+replayed session through the real pipeline (`pipeline.py` — same code the
+`watch` and `radar` drivers use, a third driver) and reports detection
+latency, precision, accept rate, and false-interruption rate. This is the
+piece that lets the interruption policy's fingerprint scheme (see the
+known limitation below) and detection quality more broadly be tuned and
+regression-tested without a human in the loop, so it's worth treating as
+the natural next phase rather than, say, a richer fingerprint first.
 
 A known limitation from Phase 3: if a fix applies but the full-suite
 regression check fails afterward, the shadow worktree is left with the fix

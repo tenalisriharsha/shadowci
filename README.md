@@ -31,6 +31,12 @@ flags a patch as worth surfacing once enough accepted fixes of that kind
 show it's wanted. `shadowci signals` shows the running tally and the
 policy's current verdict for each kind of fix.
 
+`shadowci radar` puts all of that in one ambient terminal dashboard instead
+of a scrolling log: watched files, live check status, and pending ghost
+patches with their interruption-policy verdict, each handled with a single
+keypress (`a`/`r`/`i`) routed through the exact same accept/reject/ignore
+logic as the plain CLI commands.
+
 ## Quick Start
 
 ```bash
@@ -43,10 +49,11 @@ shadowci init                # writes shadowci.toml and creates the shadow workt
 shadowci status               # inspect current configuration
 shadowci watch                 # watch for changes, sync them, run checks, escalate on failure
 shadowci watch --skip-checks    # just watch and sync, skip the check/escalation step
-shadowci apply-ghost <patch>     # apply a verified ghost patch to the live tree (records "accept")
-shadowci reject-ghost <patch>     # discard a saved patch (records "reject")
-shadowci ignore-ghost <patch>      # leave a saved patch unapplied (records "ignore")
-shadowci signals                    # show recorded signal history and current policy scores
+shadowci radar                   # the same pipeline as a live terminal dashboard
+shadowci apply-ghost <patch>       # apply a verified ghost patch to the live tree (records "accept")
+shadowci reject-ghost <patch>       # discard a saved patch (records "reject")
+shadowci ignore-ghost <patch>        # leave a saved patch unapplied (records "ignore")
+shadowci signals                      # show recorded signal history and current policy scores
 ```
 
 ## Preview
@@ -114,6 +121,26 @@ other hasn't been seen enough times yet, so it stays silent.
 
 ![shadowci signals showing per-fingerprint scores](docs/screenshots/13-signals.png)
 
+**`shadowci radar`** — the same watch → check → escalate → verify pipeline
+as a live terminal dashboard: watched files, check status, and the log, all
+in one place, with no pending patches yet.
+
+![shadowci radar watching, nothing pending](docs/screenshots/14-radar-watching.png)
+
+**A ghost patch surfaces on the dashboard** — a real bug lands, the
+targeted test fails, the scripted provider's fix verifies, and because this
+kind of fix ("pytest-targeted") already has an accepted history, the
+interruption policy marks it `verdict=surface` instead of staying silent.
+
+![shadowci radar with a ghost patch surfaced](docs/screenshots/15-radar-pending-patch.png)
+
+**Accepting it with a keypress** — pressing `a` on the selected patch
+applies it to the live tree and records the accept signal through the same
+`pipeline.accept_patch` the plain `apply-ghost` command calls; the patch
+drops off the pending list immediately.
+
+![shadowci radar after accepting a patch with the a key](docs/screenshots/16-radar-accepted.png)
+
 **Test suite** — every module shipped so far is covered.
 
 ![shadowci test suite passing](docs/screenshots/09-test-suite.png)
@@ -175,8 +202,10 @@ pytest -v
 ```
 
 The screenshots under `docs/screenshots/` are generated from real command
-output by `scripts/capture_screenshots.py` (requires `playwright` and a
-Chromium build: `pip install playwright && playwright install chromium`).
+output (and, for the `radar` dashboard, a real `RadarEngine` run rendered
+through the same code the TUI uses) by `scripts/capture_screenshots.py`
+(requires `playwright` and a Chromium build:
+`pip install playwright && playwright install chromium`).
 
 ## Status
 
@@ -197,9 +226,15 @@ ShadowCI is under active development. Implemented and fully tested so far:
   originally failed; a deterministic, silent-by-default scoring model
   decides whether a future fix of that kind is worth surfacing, and
   `shadowci signals` reports the running tally and verdict (Phase 4).
+- `shadowci radar`: a terminal dashboard over the same pipeline, showing
+  watched files, live check status, and pending ghost patches with their
+  interruption-policy verdict; `a`/`r`/`i` keybindings accept/reject/ignore
+  the selected patch through the same logic the plain CLI commands use
+  (Phase 5).
 
-The terminal bug-radar view and the evaluation harness are not built yet —
-see [PROGRESS.md](PROGRESS.md) for the full phased plan.
+The evaluation harness (replaying recorded sessions with injected bugs to
+measure detection latency, precision, and false-interruption rate) is not
+built yet — see [PROGRESS.md](PROGRESS.md) for the full phased plan.
 
 ## License
 

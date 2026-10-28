@@ -18,6 +18,12 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from shadowci import pipeline as shadowci_pipeline
+from shadowci import radar as shadowci_radar
+from shadowci.config import ShadowCIConfig
+from shadowci.events import Signal
+from shadowci.providers.scripted import ScriptedProvider
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / "docs" / "screenshots"
 PYTHON = sys.executable
@@ -68,8 +74,91 @@ TEMPLATE = """<!DOCTYPE html>
 """
 
 
+RADAR_TEMPLATE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  * {{ box-sizing: border-box; }}
+  body {{ margin:0; background:#11111b; display:flex; justify-content:center; padding:28px; }}
+  .term {{
+    width: 1250px;
+    background: #1a1b26;
+    border-radius: 10px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+    overflow: hidden;
+    font-family: 'Menlo', 'SF Mono', Consolas, monospace;
+  }}
+  .titlebar {{
+    background: #24253a;
+    padding: 11px 16px;
+    display:flex; align-items:center; gap:8px;
+  }}
+  .dot {{ width:12px; height:12px; border-radius:50%; }}
+  .red {{ background:#ff5f56; }}
+  .yellow {{ background:#ffbd2e; }}
+  .green {{ background:#27c93f; }}
+  .title {{ color:#7d7fa3; font-size:12.5px; margin-left:10px; }}
+  .body {{
+    padding: 18px 22px 24px;
+    color: #c6c9e8;
+    font-size: 12px;
+    line-height: 1.5;
+  }}
+  .prompt {{ color: #7ee787; }}
+  .path {{ color:#79c0ff; }}
+  .cmd {{ color: #f0f0ff; font-weight: 600; }}
+  .screen {{
+    margin: 10px 0 0 0;
+    white-space: pre;
+    color: #b8bce0;
+  }}
+</style></head>
+<body><div class="term">
+<div class="titlebar"><div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div><div class="title">{window_title}</div></div>
+<div class="body">
+<span class="prompt">&#10095;</span> <span class="path">{path_label}</span> <span class="cmd">{command}</span>
+<pre class="screen">{screen}</pre>
+</div>
+</div></body></html>
+"""
+
+
 def esc(text: str) -> str:
     return html.escape(text)
+
+
+def render_radar(path_label: str, command: str, dashboard_lines: list[str], window_title: str) -> str:
+    return RADAR_TEMPLATE.format(
+        window_title=esc(window_title),
+        path_label=esc(path_label),
+        command=esc(command),
+        screen=esc("\n".join(dashboard_lines)),
+    )
+
+
+class _CaptureScreen:
+    """A duck-typed stand-in for a curses window, sized like a real
+    terminal — `tui._render` truncates each line to this width exactly as
+    it would for a real `addnstr` call, so the captured frame matches what
+    `shadowci radar` would actually draw at this terminal size."""
+
+    def __init__(self, height: int = 30, width: int = 120) -> None:
+        self._height = height
+        self._width = width
+        self.rows: dict[int, str] = {}
+
+    def erase(self) -> None:
+        self.rows = {}
+
+    def getmaxyx(self) -> tuple[int, int]:
+        return self._height, self._width
+
+    def addnstr(self, row: int, col: int, text: str, n: int) -> None:
+        self.rows[row] = text[:n]
+
+    def refresh(self) -> None:
+        pass
+
+    def lines(self) -> list[str]:
+        return [self.rows.get(row, "") for row in range(max(self.rows, default=-1) + 1)]
 
 
 def render(path_label: str, command: str, stdout: str, stderr: str, returncode: int, window_title: str) -> str:
@@ -97,8 +186,8 @@ def label(cwd: Path) -> str:
     return text.replace(home, "~", 1) if text.startswith(home) else text
 
 
-def shot(html_source: str, out_path: Path, browser) -> None:
-    page = browser.new_page(viewport={"width": 980, "height": 10})
+def shot(html_source: str, out_path: Path, browser, width: int = 980) -> None:
+    page = browser.new_page(viewport={"width": width, "height": 10})
     page.set_content(html_source)
     page.wait_for_timeout(50)
     page.screenshot(path=str(out_path), full_page=True)
@@ -379,6 +468,111 @@ def main() -> None:
             browser,
         )
         shutil.rmtree(signals_repo, ignore_errors=True)
+
+        # 14-16. the Bug-Radar dashboard (`shadowci radar`) — the same
+        # watch -> check -> escalate -> verify pipeline rendered as a live
+        # terminal view instead of a scrolling log, with pending ghost
+        # patches handled by a keypress through the exact same
+        # accept/reject/ignore logic the plain CLI commands use.
+        radar_repo = Path(tempfile.gettempdir()) / "shadowci-radar-repo"
+        shutil.rmtree(radar_repo, ignore_errors=True)
+        radar_repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=radar_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Demo User"], cwd=radar_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "demo@example.com"], cwd=radar_repo, check=True)
+        (radar_repo / "app.py").write_text("def add(a, b):\n    return a + b\n")
+        (radar_repo / "tests").mkdir()
+        (radar_repo / "tests" / "test_app.py").write_text(
+            "from app import add\n\n\ndef test_app():\n    assert add(2, 3) == 5\n"
+        )
+        subprocess.run(["git", "add", "app.py", "tests"], cwd=radar_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=radar_repo, check=True)
+
+        radar_config = ShadowCIConfig(
+            project_root=radar_repo,
+            shadow_dir=Path(".shadowci/shadow"),
+            debounce_seconds=0.05,
+            idle_seconds=0.1,
+            poll_interval_seconds=0.05,
+        )
+
+        # Pre-seed accept history for "pytest-targeted" so the interruption
+        # policy is already biased toward surfacing the next fix of that kind.
+        seed_store = shadowci_pipeline.signal_store(radar_repo)
+        for i in range(3):
+            seed_store.record("pytest-targeted", Signal.ACCEPT, f"seed{i}")
+
+        engine = shadowci_radar.RadarEngine(radar_config)
+        engine.ensure_worktree()
+
+        fix_diff = (
+            "--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n-    return a + b + 1\n+    return a + b\n"
+        )
+        test_src = "from app import add\n\n\ndef test_app():\n    assert add(2, 3) == 5\n"
+        from shadowci import tui as shadowci_tui
+
+        def capture_dashboard() -> list[str]:
+            screen = _CaptureScreen(height=30, width=150)
+            shadowci_tui._render(screen, engine.state, 0)
+            return screen.lines()
+
+        original_create_provider = shadowci_radar.create_provider
+        shadowci_radar.create_provider = lambda name: ScriptedProvider(
+            tests=[test_src], fixes=[fix_diff]
+        )
+        try:
+            for _ in range(3):
+                engine.step()
+                time.sleep(0.05)
+
+            shot(
+                render_radar(
+                    label(radar_repo),
+                    "shadowci radar .",
+                    capture_dashboard(),
+                    "shadowci radar — watching, nothing pending",
+                ),
+                OUT_DIR / "14-radar-watching.png",
+                browser,
+                width=1300,
+            )
+
+            (radar_repo / "app.py").write_text("def add(a, b):\n    return a + b + 1\n")
+            for _ in range(60):
+                state = engine.step()
+                if state.pending_patches:
+                    break
+                time.sleep(0.05)
+
+            shot(
+                render_radar(
+                    label(radar_repo),
+                    "shadowci radar .",
+                    capture_dashboard(),
+                    "shadowci radar — a ghost patch surfaced",
+                ),
+                OUT_DIR / "15-radar-pending-patch.png",
+                browser,
+                width=1300,
+            )
+
+            shadowci_tui._handle_key(engine, ord("a"), 0)
+
+            shot(
+                render_radar(
+                    label(radar_repo),
+                    "shadowci radar .",
+                    capture_dashboard(),
+                    "shadowci radar — patch accepted with [a]",
+                ),
+                OUT_DIR / "16-radar-accepted.png",
+                browser,
+                width=1300,
+            )
+        finally:
+            shadowci_radar.create_provider = original_create_provider
+        shutil.rmtree(radar_repo, ignore_errors=True)
 
         browser.close()
 
