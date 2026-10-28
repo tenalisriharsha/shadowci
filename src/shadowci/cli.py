@@ -10,33 +10,26 @@ ghost patch to disk that `apply-ghost` can apply to the live tree in one
 command. Phase 4 adds the interruption policy: every verified patch is
 still saved, but `watch` now also reports whether the policy would
 surface it or stay silent, and `apply-ghost` / `reject-ghost` /
-`ignore-ghost` record the accept/reject/ignore signal that trains it. The
-bug-radar TUI arrives later.
+`ignore-ghost` record the accept/reject/ignore signal that trains it.
+Phase 5 adds `radar`, a terminal dashboard over the same pipeline
+(`pipeline.py`) for an ambient view instead of a scrolling log.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 import time
 from pathlib import Path
 
+from shadowci import pipeline
 from shadowci.changeset import ChangeSetDetector
-from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
-from shadowci.escalation import EscalationPolicy
-from shadowci.events import ChangeSet, CheckResult, GhostPatch, Signal
-from shadowci.ghost import GhostPatchBuilder, GhostPatchError, apply_to_live_tree
-from shadowci.interruption import InterruptionPolicy, fingerprint_for_patch
+from shadowci.events import ChangeSet, CheckResult, Signal
+from shadowci.interruption import InterruptionPolicy
 from shadowci.providers import create_provider
 from shadowci.shadow_worktree import ShadowWorktree, ShadowWorktreeError
-from shadowci.signals import SignalStore
 from shadowci.watcher import PollingFileWatcher
-
-GHOST_PATCH_DIRNAME = ".shadowci/ghost"
-SIGNALS_FILENAME = ".shadowci/signals.json"
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -92,109 +85,53 @@ def _print_check_result(result: CheckResult) -> None:
             print(f"    {line}")
 
 
-def _ghost_patch_dir(root: Path) -> Path:
-    path = root / GHOST_PATCH_DIRNAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _signal_store(root: Path) -> SignalStore:
-    return SignalStore(root / SIGNALS_FILENAME)
-
-
-def _metadata_path(patch_path: Path) -> Path:
-    return patch_path.with_suffix(".json")
-
-
-def _load_patch_metadata(patch_path: Path) -> dict | None:
-    """The fingerprint/digest sidecar saved alongside a ghost patch, if any.
-
-    Patch files handed to the CLI by hand (as in a scripted apply) won't
-    have one — in that case the signal simply isn't recorded, rather than
-    guessing a fingerprint.
-    """
-    metadata_path = _metadata_path(patch_path)
-    if not metadata_path.is_file():
-        return None
-    return json.loads(metadata_path.read_text())
-
-
-def _save_ghost_patch(patch: GhostPatch, root: Path) -> Path:
-    digest = hashlib.sha1(patch.diff.encode("utf-8")).hexdigest()[:10]
-    patch_path = _ghost_patch_dir(root) / f"{digest}.patch"
-    patch_path.write_text(patch.diff)
-    _metadata_path(patch_path).write_text(
-        json.dumps(
-            {
-                "digest": digest,
-                "fingerprint": fingerprint_for_patch(patch),
-                "summary": patch.evidence.summary,
-            },
-            indent=2,
-        )
-    )
-    return patch_path
-
-
 def _run_checks_and_maybe_escalate(
     changeset: ChangeSet, worktree: ShadowWorktree, config: ShadowCIConfig
 ) -> None:
-    runners = build_check_runners(changeset, worktree.path)
-    results = run_checks(runners, worktree.path)
-    for result in results:
+    outcome = pipeline.run_checks_and_maybe_escalate(changeset, worktree, config, create_provider)
+
+    for result in outcome.check_results:
         _print_check_result(result)
 
-    failing = tuple(result for result in results if not result.passed)
-    if not failing:
+    if not outcome.failing_checks:
         return
 
-    try:
-        provider = create_provider(config.provider)
-    except ValueError as exc:
-        print(f"  skipping escalation: {exc}", file=sys.stderr)
+    if outcome.unknown_provider_error is not None:
+        print(f"  skipping escalation: {outcome.unknown_provider_error}", file=sys.stderr)
         return
 
-    print(f"  escalating to provider '{provider.name}' ({len(failing)} check(s) failed)")
-    try:
-        policy = EscalationPolicy(provider)
-        escalation = policy.maybe_escalate(changeset, results)
-    except RuntimeError as exc:
-        print(f"  provider error: {exc}", file=sys.stderr)
+    print(
+        f"  escalating to provider '{outcome.provider_name}' "
+        f"({len(outcome.failing_checks)} check(s) failed)"
+    )
+
+    if outcome.provider_error is not None:
+        print(f"  provider error: {outcome.provider_error}", file=sys.stderr)
         return
 
-    if escalation is None:
+    if outcome.regression_test is None:
         return
 
     print("  regression test:")
-    for line in escalation.regression_test.splitlines():
+    for line in outcome.regression_test.splitlines():
         print(f"    {line}")
     print("  proposed fix:")
-    for line in escalation.proposed_fix.splitlines():
+    for line in outcome.proposed_fix.splitlines():
         print(f"    {line}")
 
     print("  verifying fix in shadow worktree...")
-    try:
-        builder = GhostPatchBuilder(worktree)
-        patch = builder.build(
-            changeset,
-            escalation.failing_checks,
-            escalation.regression_test,
-            escalation.proposed_fix,
-        )
-    except GhostPatchError as exc:
-        print(f"  could not verify a ghost patch: {exc}", file=sys.stderr)
+
+    if outcome.ghost_patch_error is not None:
+        print(f"  could not verify a ghost patch: {outcome.ghost_patch_error}", file=sys.stderr)
         return
 
-    patch_path = _save_ghost_patch(patch, config.project_root)
-    print(f"  ghost patch verified: {patch.evidence.summary}")
-    print(f"  saved to {patch_path}")
+    if outcome.ghost_patch is None or outcome.ghost_patch_path is None:
+        return
 
-    policy = InterruptionPolicy(
-        _signal_store(config.project_root),
-        threshold=config.interruption_threshold,
-        min_signals=config.interruption_min_signals,
-    )
-    decision = policy.evaluate(patch)
+    print(f"  ghost patch verified: {outcome.ghost_patch.evidence.summary}")
+    print(f"  saved to {outcome.ghost_patch_path}")
+
+    decision = outcome.decision
     if decision.interrupt:
         print(
             f"  interruption policy: surfacing this patch "
@@ -206,7 +143,7 @@ def _run_checks_and_maybe_escalate(
             f"(score={decision.score:.2f} over {decision.sample_size} past signal(s)) "
             "— patch is saved, review it whenever you like"
         )
-    print(f"  apply with: shadowci apply-ghost {patch_path}")
+    print(f"  apply with: shadowci apply-ghost {outcome.ghost_patch_path}")
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
@@ -246,28 +183,27 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_radar(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+    config = load_config(root)
+    if args.interval is not None:
+        config.poll_interval_seconds = args.interval
+
+    from shadowci import tui
+
+    return tui.run(config, skip_checks=args.skip_checks, max_cycles=args.max_cycles)
+
+
 def _cmd_apply_ghost(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     patch_file = Path(args.patch_file).resolve()
 
-    if not patch_file.is_file():
-        print(f"error: no such patch file: {patch_file}", file=sys.stderr)
+    result = pipeline.accept_patch(root, patch_file)
+    if not result.ok:
+        print(f"error: {result.message}", file=sys.stderr)
         return 1
 
-    diff = patch_file.read_text()
-    try:
-        apply_to_live_tree(diff, root)
-    except GhostPatchError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"applied {patch_file} to {root}")
-
-    metadata = _load_patch_metadata(patch_file)
-    if metadata is not None:
-        _signal_store(root).record(metadata["fingerprint"], Signal.ACCEPT, metadata["digest"])
-        print(f"recorded signal: accept (fingerprint={metadata['fingerprint']!r})")
-
+    print(result.message)
     return 0
 
 
@@ -275,20 +211,12 @@ def _cmd_reject_ghost(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     patch_file = Path(args.patch_file).resolve()
 
-    if not patch_file.is_file():
-        print(f"error: no such patch file: {patch_file}", file=sys.stderr)
+    result = pipeline.reject_patch(root, patch_file)
+    if not result.ok:
+        print(f"error: {result.message}", file=sys.stderr)
         return 1
 
-    metadata = _load_patch_metadata(patch_file)
-    if metadata is not None:
-        _signal_store(root).record(metadata["fingerprint"], Signal.REJECT, metadata["digest"])
-        print(f"recorded signal: reject (fingerprint={metadata['fingerprint']!r})")
-        _metadata_path(patch_file).unlink(missing_ok=True)
-    else:
-        print("no fingerprint metadata found alongside this patch — signal not recorded")
-
-    patch_file.unlink()
-    print(f"discarded {patch_file}")
+    print(result.message)
     return 0
 
 
@@ -296,25 +224,19 @@ def _cmd_ignore_ghost(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     patch_file = Path(args.patch_file).resolve()
 
-    if not patch_file.is_file():
-        print(f"error: no such patch file: {patch_file}", file=sys.stderr)
+    result = pipeline.ignore_patch(root, patch_file)
+    if not result.ok:
+        print(f"error: {result.message}", file=sys.stderr)
         return 1
 
-    metadata = _load_patch_metadata(patch_file)
-    if metadata is None:
-        print("no fingerprint metadata found alongside this patch — signal not recorded")
-        return 0
-
-    _signal_store(root).record(metadata["fingerprint"], Signal.IGNORE, metadata["digest"])
-    print(f"recorded signal: ignore (fingerprint={metadata['fingerprint']!r})")
-    print(f"{patch_file} left on disk, unapplied")
+    print(result.message)
     return 0
 
 
 def _cmd_signals(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     config = load_config(root)
-    store = _signal_store(root)
+    store = pipeline.signal_store(root)
     records = store.all()
 
     if not records:
@@ -380,6 +302,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="sync change sets into the shadow worktree but don't run checks",
     )
     watch_parser.set_defaults(func=_cmd_watch)
+
+    radar_parser = subparsers.add_parser(
+        "radar", help="launch the Bug-Radar terminal dashboard"
+    )
+    radar_parser.add_argument("path", nargs="?", default=".")
+    radar_parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="stop after this many poll cycles (default: run until 'q')",
+    )
+    radar_parser.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="override the poll interval in seconds",
+    )
+    radar_parser.add_argument(
+        "--skip-checks",
+        action="store_true",
+        help="sync change sets into the shadow worktree but don't run checks",
+    )
+    radar_parser.set_defaults(func=_cmd_radar)
 
     apply_parser = subparsers.add_parser(
         "apply-ghost", help="apply a verified ghost patch to the live tree (records an accept signal)"
