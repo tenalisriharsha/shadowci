@@ -37,6 +37,12 @@ patches with their interruption-policy verdict, each handled with a single
 keypress (`a`/`r`/`i`) routed through the exact same accept/reject/ignore
 logic as the plain CLI commands.
 
+An evaluation harness (`shadowci evaluate`) replays a suite of recorded
+sessions — some with a synthetically injected bug, some clean edits that
+should never trigger anything — through that exact same pipeline on a
+simulated clock, and reports detection latency, precision, accept rate,
+and false interruptions with no human in the loop.
+
 ## Quick Start
 
 ```bash
@@ -54,6 +60,7 @@ shadowci apply-ghost <patch>       # apply a verified ghost patch to the live tr
 shadowci reject-ghost <patch>       # discard a saved patch (records "reject")
 shadowci ignore-ghost <patch>        # leave a saved patch unapplied (records "ignore")
 shadowci signals                      # show recorded signal history and current policy scores
+shadowci evaluate                      # replay the built-in scenario suite and report metrics
 ```
 
 ## Preview
@@ -141,6 +148,22 @@ drops off the pending list immediately.
 
 ![shadowci radar after accepting a patch with the a key](docs/screenshots/16-radar-accepted.png)
 
+**`shadowci evaluate`** — the evaluation harness replays a built-in suite
+of synthetic bug-injected and clean scenarios through the real pipeline on
+a simulated clock, with no human in the loop, and reports detection
+latency, precision, accept rate, and false interruptions.
+
+![shadowci evaluate running the built-in scenario suite](docs/screenshots/17-evaluate.png)
+
+**`shadowci evaluate --repeat`** — replays one bug-and-fix scenario
+several times in one project, accepting every verified fix, showing the
+interruption policy start silent and converge to surfacing it once its
+accept history clears the threshold — the same mechanism behind
+`shadowci signals`, demonstrated without a human clicking accept five
+times by hand.
+
+![shadowci evaluate --repeat showing the policy converge](docs/screenshots/18-evaluate-repeat.png)
+
 **Test suite** — every module shipped so far is covered.
 
 ![shadowci test suite passing](docs/screenshots/09-test-suite.png)
@@ -191,6 +214,11 @@ drops off the pending list immediately.
                                     └─────────────────────┘
 ```
 
+Separately, `shadowci evaluate` drives the same pipeline as a third
+headless caller: it replays recorded (optionally synthetic-bug-injected)
+sessions on a simulated clock and scores the result against ground truth
+instead of rendering it for a human.
+
 See [PROGRESS.md](PROGRESS.md) for the full design write-up and the module
 layout under `src/shadowci/`.
 
@@ -209,32 +237,35 @@ through the same code the TUI uses) by `scripts/capture_screenshots.py`
 
 ## Status
 
-ShadowCI is under active development. Implemented and fully tested so far:
+ShadowCI's planned feature set is complete and fully tested (149 tests):
 
 - Project scaffold, core data model, file watcher, change-set detector, and
-  shadow git worktree (Phase 1).
+  shadow git worktree.
 - Deterministic check runners (pytest, mypy, ruff) with targeted-test
   matching, the `claude-cli` and `local` LLM providers, and an escalation
-  policy that calls a provider only after a real check failure (Phase 2).
+  policy that calls a provider only after a real check failure.
 - Ghost patches: a provider's regression test and fix are verified for
   real in the shadow worktree (test must reproduce the bug, fix must apply
   cleanly, full suite must stay green), then saved as a diff that
   `shadowci apply-ghost` applies to the live tree in one command, rebasing
-  onto whatever's changed there since (Phase 3).
+  onto whatever's changed there since.
 - Interruption policy: `apply-ghost` / `reject-ghost` / `ignore-ghost`
   record accept/reject/ignore signals grouped by the kind of check that
   originally failed; a deterministic, silent-by-default scoring model
   decides whether a future fix of that kind is worth surfacing, and
-  `shadowci signals` reports the running tally and verdict (Phase 4).
+  `shadowci signals` reports the running tally and verdict.
 - `shadowci radar`: a terminal dashboard over the same pipeline, showing
   watched files, live check status, and pending ghost patches with their
   interruption-policy verdict; `a`/`r`/`i` keybindings accept/reject/ignore
-  the selected patch through the same logic the plain CLI commands use
-  (Phase 5).
+  the selected patch through the same logic the plain CLI commands use.
+- `shadowci evaluate`: an evaluation harness that replays recorded
+  (optionally synthetic-bug-injected) sessions through the real pipeline on
+  a simulated clock and reports detection latency, precision, accept rate,
+  and false interruptions with no human in the loop.
 
-The evaluation harness (replaying recorded sessions with injected bugs to
-measure detection latency, precision, and false-interruption rate) is not
-built yet — see [PROGRESS.md](PROGRESS.md) for the full phased plan.
+See [PROGRESS.md](PROGRESS.md) for the phase-by-phase build history and
+[DAILY_REPORT.md](DAILY_REPORT.md) for a summary of what was built, test
+results, known limitations, and ideas for future work.
 
 ## License
 
