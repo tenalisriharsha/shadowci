@@ -197,12 +197,32 @@ quality can be tuned and regression-tested without a human in the loop.
   ghost patch to the live tree and records an `accept` signal when a
   metadata sidecar is present), `reject-ghost <patch-file>` (discards the
   patch, records `reject`), `ignore-ghost <patch-file>` (leaves the patch
-  on disk, records `ignore`), and `signals` (prints per-fingerprint
-  accept/reject/ignore counts and the policy's current verdict for each).
+  on disk, records `ignore`), `signals` (prints per-fingerprint
+  accept/reject/ignore counts and the policy's current verdict for each),
+  and `evaluate` (replays the evaluation harness's built-in scenario suite
+  — or a single saved scenario file via `--scenario` — and prints its
+  report; `--save-dir` dumps the chosen scenario(s) to disk instead of
+  running them; `--repeat N` runs the interruption-policy convergence
+  replay instead and reports how its verdict evolved).
   `watch` and `apply-ghost`/`reject-ghost`/`ignore-ghost` are now thin
   printers over `pipeline.py`'s functions rather than owning the logic
   themselves.
 - `__main__.py` — `python -m shadowci` entry point.
+- `evaluation/session.py` — `RecordedEdit` / `RecordedSession`: a
+  replayable session format (starting files + timestamped edits, offsets
+  in simulated seconds rather than wall-clock time) with JSON
+  round-tripping.
+- `evaluation/scenarios.py` — `Scenario`: a `RecordedSession` plus ground
+  truth (`bug_expected`, and for bug scenarios the regression test + fix
+  diff a correct response looks like). `built_in_scenarios()` is the
+  five-scenario suite `shadowci evaluate` replays by default.
+- `evaluation/harness.py` — `run_scenario` / `run_suite`: replay scenarios
+  through the real pipeline in a real temp git repo + shadow worktree on a
+  simulated clock, and aggregate into an `EvaluationReport` (precision,
+  false-interruption rate, accept rate, mean detection latency).
+  `run_convergence`: replays one bug-and-fix scenario repeatedly in one
+  project, accepting every verified fix, to show `InterruptionPolicy`'s
+  verdict converge from silent to surfacing as accept history accumulates.
 
 ## Phased Build Plan
 
@@ -281,18 +301,49 @@ quality can be tuned and regression-tested without a human in the loop.
     headlessly
   - Full unit test coverage for every module above, all green (129 tests)
 
-- [ ] **Phase 6 — Evaluation Harness**
-  - Session recording/replay format
-  - Synthetic bug injection
-  - Metrics: detection latency, precision, accept rate, false interruptions
-  - Harness report CLI output
+- [x] **Phase 6 — Evaluation Harness**
+  - `evaluation/session.py`: `RecordedEdit` / `RecordedSession` — a
+    replayable session format (starting files + a flat list of edits,
+    each an offset in simulated seconds from session start rather than a
+    wall-clock timestamp) with JSON round-tripping
+    (`save_session`/`load_session`)
+  - `evaluation/scenarios.py`: `Scenario` pairs a `RecordedSession` with
+    ground truth — `bug_expected`, and for bug scenarios the exact
+    regression test + fix diff a correct response looks like, so the
+    harness drives a real `ScriptedProvider` through the real pipeline
+    instead of asserting against a mocked one. Five built-in scenarios
+    (`built_in_scenarios()`): three synthetic bugs (an off-by-one
+    operator, an off-by-one bound, an inverted comparison) and two clean
+    edits (a rename, a comment) that should never escalate. Also
+    JSON-serializable (`save_scenario`/`load_scenario`) for custom
+    scenarios authored outside the built-in suite
+  - `evaluation/harness.py`: `run_scenario` replays one scenario's edits
+    through the real pipeline (`pipeline.run_checks_and_maybe_escalate`,
+    the exact function `watch` and `radar` call) in a real temp git repo
+    + shadow worktree, on a simulated clock fed straight to
+    `ChangeSetDetector.poll(now=...)` so a whole suite replays in
+    milliseconds; `run_suite` aggregates many scenarios into an
+    `EvaluationReport` (precision, false-interruption rate, accept rate,
+    mean detection latency); `run_convergence` replays the *same*
+    bug-and-fix scenario several times in one project, accepting every
+    verified fix, to show `InterruptionPolicy`'s verdict start silent
+    (below `min_signals`) and converge to surfacing once accept history
+    clears the threshold — a concrete, regression-testable demonstration
+    of the exact mechanism Phase 4 built
+  - `shadowci evaluate`: runs the built-in suite and prints a per-scenario
+    verdict (DETECTED/MISSED/SILENT/FALSE INTERRUPTION) plus the
+    aggregate report; `--save-dir <dir>` writes the chosen scenario(s) to
+    disk as JSON instead of running them; `--scenario <path>` replays a
+    single saved scenario file instead of the built-in suite; `--repeat N`
+    runs the convergence replay instead and prints how the policy's
+    verdict evolved iteration by iteration
+  - Full unit test coverage for every module above, all green (149 tests)
 
 ## Where to resume
 
-**Next session: start Phase 6 (Evaluation Harness).** Phases 1–5 are
-complete — scaffold, core data models, polling watcher, change-set
-detector, shadow worktree manager, the full `checks/` package
-(pytest/mypy/ruff/targeted), the `claude-cli`/`local`/`scripted`
+All six planned phases are complete — scaffold, core data models, polling
+watcher, change-set detector, shadow worktree manager, the full `checks/`
+package (pytest/mypy/ruff/targeted), the `claude-cli`/`local`/`scripted`
 providers, `EscalationPolicy`, `GhostPatchBuilder` (verified test + fix +
 full-suite confirmation + rebased diff), `SignalStore` +
 `InterruptionPolicy` (deterministic, silent-by-default scoring over
@@ -300,24 +351,22 @@ recorded accept/reject/ignore history), a `watch` command that runs
 checks, escalates on failure, saves a verified ghost patch plus a
 fingerprint metadata sidecar, and reports the interruption policy's
 verdict for it, `apply-ghost` / `reject-ghost` / `ignore-ghost` /
-`signals` to record signals and inspect the running tally, and now
-`radar` — a `curses` terminal dashboard (`radar.py` state layer + `tui.py`
-render loop) over the exact same pipeline, with `a`/`r`/`i` keybindings
-wired to the same `pipeline.accept_patch` / `reject_patch` / `ignore_patch`
-functions the plain CLI commands call — all implemented and fully tested
-(see `tests/`, 129 tests green).
+`signals` to record signals and inspect the running tally, `radar` — a
+`curses` terminal dashboard (`radar.py` state layer + `tui.py` render
+loop) over the exact same pipeline — and now `evaluate`, a third driver
+over the same pipeline that replays recorded (optionally synthetic-bug-
+injected) sessions on a simulated clock and reports detection latency,
+precision, accept rate, and false interruptions with no human in the
+loop. See `DAILY_REPORT.md` for the full build summary.
 
-Phase 6 is the evaluation harness described in the vision doc: a session
-recording/replay format (timestamped file-save sequences, probably a
-flat JSON/JSONL format mirroring `FileChangeEvent`), synthetic bug
-injection into a replayed session, and a report command that runs a
-replayed session through the real pipeline (`pipeline.py` — same code the
-`watch` and `radar` drivers use, a third driver) and reports detection
-latency, precision, accept rate, and false-interruption rate. This is the
-piece that lets the interruption policy's fingerprint scheme (see the
-known limitation below) and detection quality more broadly be tuned and
-regression-tested without a human in the loop, so it's worth treating as
-the natural next phase rather than, say, a richer fingerprint first.
+If this project is picked up again, the natural next steps are a richer
+`InterruptionPolicy` fingerprint (see the Phase 4 known limitation below —
+now directly measurable with `shadowci evaluate`'s harness instead of
+guesswork), a `watchdog`-backed `FileWatcher` for lower-latency live use,
+and a larger, more varied built-in scenario suite (multi-file change sets,
+deletions, scenarios with a verified-but-undesirable fix to exercise real
+false interruptions through the interruption policy rather than only
+through the deterministic checks).
 
 A known limitation from Phase 3: if a fix applies but the full-suite
 regression check fails afterward, the shadow worktree is left with the fix
@@ -336,4 +385,4 @@ accumulate signal per bucket, which isn't worth the complexity until the
 Phase 6 evaluation harness can measure whether it actually improves
 precision.
 
-STATUS: IN_PROGRESS
+STATUS: COMPLETE

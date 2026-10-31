@@ -574,6 +574,39 @@ def main() -> None:
             shadowci_radar.create_provider = original_create_provider
         shutil.rmtree(radar_repo, ignore_errors=True)
 
+        # 17. evaluate — the evaluation harness replays a built-in suite of
+        # bug-injected and clean scenarios through the real pipeline on a
+        # simulated clock and reports detection latency, precision, accept
+        # rate, and false interruptions, with no human in the loop.
+        cmd = [PYTHON, "-m", "shadowci", "evaluate"]
+        result = run(cmd, cwd=REPO_ROOT)
+        shot(
+            render(
+                label(REPO_ROOT),
+                "shadowci evaluate",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci evaluate — scenario suite + detection metrics",
+            ),
+            OUT_DIR / "17-evaluate.png",
+            browser,
+        )
+
+        # 18. evaluate --repeat — replays one bug-and-fix scenario several
+        # times, accepting every verified fix, showing the interruption
+        # policy start silent and then converge to surfacing it.
+        cmd = [PYTHON, "-m", "shadowci", "evaluate", "--repeat", "5"]
+        result = run(cmd, cwd=REPO_ROOT)
+        shot(
+            render(
+                label(REPO_ROOT),
+                "shadowci evaluate --repeat 5",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci evaluate --repeat — interruption policy convergence",
+            ),
+            OUT_DIR / "18-evaluate-repeat.png",
+            browser,
+        )
+
         browser.close()
 
     shutil.rmtree(demo_repo, ignore_errors=True)

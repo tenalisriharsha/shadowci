@@ -12,7 +12,11 @@ still saved, but `watch` now also reports whether the policy would
 surface it or stay silent, and `apply-ghost` / `reject-ghost` /
 `ignore-ghost` record the accept/reject/ignore signal that trains it.
 Phase 5 adds `radar`, a terminal dashboard over the same pipeline
-(`pipeline.py`) for an ambient view instead of a scrolling log.
+(`pipeline.py`) for an ambient view instead of a scrolling log. Phase 6
+adds `evaluate`, a third driver over the same pipeline that replays
+recorded (optionally synthetic-bug-injected) sessions on a simulated clock
+and reports detection latency, precision, accept rate, and false
+interruptions, with no human in the loop.
 """
 
 from __future__ import annotations
@@ -264,6 +268,84 @@ def _cmd_signals(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_metric(value: float | None, suffix: str = "", na: str = "n/a") -> str:
+    return na if value is None else f"{value:.2f}{suffix}"
+
+
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    from shadowci.evaluation import harness, scenarios as scenario_lib
+
+    if args.scenario:
+        chosen = (scenario_lib.load_scenario(Path(args.scenario)),)
+    else:
+        chosen = scenario_lib.built_in_scenarios()
+
+    if args.save_dir:
+        save_root = Path(args.save_dir)
+        save_root.mkdir(parents=True, exist_ok=True)
+        for scenario in chosen:
+            path = save_root / f"{scenario.session.name}.json"
+            scenario_lib.save_scenario(scenario, path)
+            print(f"wrote {path}")
+        return 0
+
+    if args.repeat:
+        bug_scenarios = [scenario for scenario in chosen if scenario.bug_expected]
+        if not bug_scenarios:
+            print("error: no bug scenario available to repeat", file=sys.stderr)
+            return 1
+        scenario = bug_scenarios[0]
+        convergence = harness.run_convergence(scenario, repeats=args.repeat)
+
+        print(f"replaying '{scenario.session.name}' {args.repeat} time(s), accepting every verified fix:")
+        for index, iteration in enumerate(convergence.iterations, start=1):
+            if iteration.decision is None:
+                print(f"  iteration {index}: not verified")
+                continue
+            verdict = "surfaces" if iteration.decision.interrupt else "stays silent"
+            print(
+                f"  iteration {index}: verified, policy {verdict} "
+                f"(score={iteration.decision.score:.2f} over {iteration.decision.sample_size} past signal(s))"
+            )
+
+        first = convergence.first_interrupt_iteration
+        if first is None:
+            print("the policy never chose to surface this kind of fix over this run")
+        else:
+            print(f"the policy started surfacing this kind of fix from iteration {first} onward")
+        return 0
+
+    report = harness.run_suite(chosen)
+
+    for result in report.results:
+        name = result.scenario.session.name
+        expectation = "bug" if result.scenario.bug_expected else "clean"
+        if result.scenario.bug_expected:
+            verdict = "DETECTED" if result.true_positive else "MISSED"
+        else:
+            verdict = "FALSE INTERRUPTION" if result.false_interruption else "SILENT (correct)"
+        latency = (
+            f", latency={result.detection_latency_seconds:.3f}s"
+            if result.detection_latency_seconds is not None
+            else ""
+        )
+        print(f"{name} [{expectation}]: {verdict}{latency}")
+
+    print()
+    print(f"scenarios run           : {len(report.results)}")
+    print(f"true positives          : {report.true_positives}")
+    print(f"false negatives         : {report.false_negatives}")
+    print(f"false interruptions     : {report.false_interruptions}")
+    print(f"precision               : {_format_metric(report.precision)}")
+    print(f"false interruption rate : {_format_metric(report.false_interruption_rate)}")
+    print(f"accept rate             : {_format_metric(report.accept_rate)}")
+    print(
+        "mean detection latency  : "
+        f"{_format_metric(report.mean_detection_latency_seconds, suffix='s')}"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shadowci",
@@ -352,6 +434,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     signals_parser.add_argument("path", nargs="?", default=".")
     signals_parser.set_defaults(func=_cmd_signals)
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="replay recorded (optionally bug-injected) sessions through the real pipeline",
+    )
+    evaluate_parser.add_argument(
+        "--scenario",
+        default=None,
+        help="path to a saved scenario JSON file to replay instead of the built-in suite",
+    )
+    evaluate_parser.add_argument(
+        "--save-dir",
+        default=None,
+        help="write the chosen scenario(s) to this directory as JSON instead of running them",
+    )
+    evaluate_parser.add_argument(
+        "--repeat",
+        type=int,
+        default=None,
+        help=(
+            "replay one bug scenario this many times, accepting every verified fix, "
+            "and report how the interruption policy's verdict evolves"
+        ),
+    )
+    evaluate_parser.set_defaults(func=_cmd_evaluate)
 
     return parser
 
