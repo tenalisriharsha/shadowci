@@ -337,7 +337,7 @@ quality can be tuned and regression-tested without a human in the loop.
     single saved scenario file instead of the built-in suite; `--repeat N`
     runs the convergence replay instead and prints how the policy's
     verdict evolved iteration by iteration
-  - Full unit test coverage for every module above, all green (149 tests)
+  - Full unit test coverage for every module above, all green (152 tests)
 
 ## Where to resume
 
@@ -384,5 +384,22 @@ file extensions or paths) would need matching history to actually
 accumulate signal per bucket, which isn't worth the complexity until the
 Phase 6 evaluation harness can measure whether it actually improves
 precision.
+
+## CI fix: stale bytecode cache in ghost-patch confirmation
+
+CI was intermittently failing the evaluation-harness tests
+(`test_cli_evaluate.py`, `test_evaluation_harness.py`): a fix that's the
+same byte length as the bug it replaces (e.g. flipping `+` to `-`) can
+land on the exact mtime Python already cached a compiled module under.
+`.pyc` validation keys on mtime + size, so the confirmation run after
+`git apply` could serve stale (buggy) bytecode and report the fix as
+unverified even though the file on disk was correct. `run_convergence`
+already worked around this for its own loop; `GhostPatchBuilder.build()`
+— the path every real fix and every `run_scenario`/`run_suite` replay
+goes through — did not. Added `clear_bytecode_cache()` in
+`checks/base.py` and call it right after `git apply` succeeds and before
+the confirmation suite runs; `test_ghost.py` pins the exact mtime+size
+collision deterministically (`test_build_survives_a_same_mtime_bytecode_collision`)
+so this doesn't depend on a real filesystem race to catch a regression.
 
 STATUS: COMPLETE

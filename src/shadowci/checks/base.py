@@ -9,6 +9,7 @@ editing.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -17,6 +18,20 @@ from pathlib import Path
 from shadowci.events import CheckResult
 
 MODULE_MISSING_MARKER = "No module named"
+
+
+def clear_bytecode_cache(worktree_path: Path) -> None:
+    """Delete every `__pycache__` under `worktree_path`.
+
+    A fix that's the same byte length as the bug it replaces (e.g. flipping
+    `+` to `-`) can land within the filesystem's mtime resolution of the
+    buggy version it overwrote. Python's `.pyc` validation keys on
+    mtime + size, so a stale bytecode cache compiled from the bug can get
+    served to the very check meant to confirm the fix. Clearing the cache
+    before re-running checks forces a real recompile from the file on disk.
+    """
+    for cache_dir in worktree_path.rglob("__pycache__"):
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 class CheckRunner(ABC):
