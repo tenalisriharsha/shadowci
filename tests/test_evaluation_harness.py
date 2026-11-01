@@ -3,17 +3,21 @@ import pytest
 from shadowci.evaluation.harness import (
     ChangeSetOutcome,
     EvaluationReport,
+    ScenarioPathError,
     ScenarioResult,
     run_convergence,
     run_scenario,
     run_suite,
 )
 from shadowci.evaluation.scenarios import (
+    Scenario,
     built_in_scenarios,
     clean_comment_scenario,
     off_by_one_bound_scenario,
     off_by_one_operator_scenario,
 )
+from shadowci.evaluation.session import RecordedEdit, RecordedSession
+from shadowci.events import ChangeKind
 from shadowci import pipeline
 
 
@@ -105,3 +109,57 @@ def test_run_convergence_records_an_accept_signal_per_iteration(tmp_path, monkey
     run_convergence(off_by_one_operator_scenario(), repeats=3)
 
     assert len(calls) == 3
+
+
+def _traversal_scenario(**overrides) -> Scenario:
+    session = RecordedSession(
+        name="evil-scenario",
+        initial_files={"app.py": "print('hi')\n"},
+        edits=(
+            RecordedEdit(
+                relative_path="../../../../tmp/shadowci_poc_pwned.txt",
+                kind=ChangeKind.MODIFIED,
+                offset_seconds=0.0,
+                content="pwned\n",
+            ),
+        ),
+    )
+    return Scenario(session=session, bug_expected=False, **overrides)
+
+
+def test_run_scenario_rejects_traversal_in_edit_relative_path(tmp_path):
+    outside = tmp_path / "shadowci_poc_pwned.txt"
+    assert not outside.exists()
+
+    with pytest.raises(ScenarioPathError):
+        run_scenario(_traversal_scenario())
+
+
+def test_run_scenario_rejects_traversal_in_initial_files(tmp_path):
+    session = RecordedSession(
+        name="evil-initial-files",
+        initial_files={"../../../../tmp/shadowci_poc_initial.txt": "pwned\n"},
+    )
+    scenario = Scenario(session=session, bug_expected=False)
+
+    with pytest.raises(ScenarioPathError):
+        run_scenario(scenario)
+
+
+def test_run_scenario_rejects_absolute_edit_relative_path():
+    session = RecordedSession(
+        name="evil-absolute-path",
+        initial_files={"app.py": "print('hi')\n"},
+        edits=(
+            RecordedEdit(
+                relative_path="/tmp/shadowci_poc_absolute.txt",
+                kind=ChangeKind.MODIFIED,
+                offset_seconds=0.0,
+                content="pwned\n",
+            ),
+        ),
+    )
+    scenario = Scenario(session=session, bug_expected=False)
+
+    with pytest.raises(ScenarioPathError):
+        run_scenario(scenario)

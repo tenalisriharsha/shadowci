@@ -101,7 +101,9 @@ class ShadowWorktree:
         try:
             return path.relative_to(self._root)
         except ValueError:
-            return path
+            raise ShadowWorktreeError(
+                f"refusing to sync path outside project root: {path}"
+            ) from None
 
     def remove(self) -> None:
         """Tear down the shadow worktree (used by tests / `shadowci clean`)."""

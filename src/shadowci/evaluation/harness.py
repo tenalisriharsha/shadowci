@@ -22,6 +22,7 @@ Two replay modes:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,30 @@ _DEFAULT_DEBOUNCE_SECONDS = 0.1
 _DEFAULT_IDLE_SECONDS = 0.2
 
 
+class ScenarioPathError(ValueError):
+    """Raised when a scenario references a path outside the sandbox root."""
+
+
+def _resolve_within(root: Path, relative: str) -> Path:
+    """Join `relative` onto `root`, rejecting anything that escapes it.
+
+    `relative` comes straight from untrusted scenario/session JSON, so an
+    absolute path or a `..` segment must be rejected rather than silently
+    joined (plain `Path.__truediv__` discards `root` for an absolute
+    right-hand side, and does nothing to stop `..` traversal). Normalized
+    lexically, not via `Path.resolve()`, so this doesn't trip over `root`
+    itself sitting behind a symlink (e.g. macOS's `/tmp`).
+    """
+    if Path(relative).is_absolute():
+        raise ScenarioPathError(f"scenario path must be relative: {relative!r}")
+
+    root_norm = os.path.normpath(str(root))
+    candidate_norm = os.path.normpath(os.path.join(root_norm, relative))
+    if candidate_norm != root_norm and not candidate_norm.startswith(root_norm + os.sep):
+        raise ScenarioPathError(f"scenario path escapes sandbox root: {relative!r}")
+    return Path(candidate_norm)
+
+
 def _run_git(args: list[str], cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
@@ -53,7 +78,7 @@ def _init_repo(root: Path, initial_files: dict[str, str]) -> None:
     _run_git(["config", "user.email", "eval@shadowci.local"], cwd=root)
 
     for relative, content in initial_files.items():
-        path = root / relative
+        path = _resolve_within(root, relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
@@ -134,7 +159,7 @@ def run_scenario(
         changesets: list[ChangeSetOutcome] = []
         pending: list[FileChangeEvent] = []
         for index, edit in enumerate(edits):
-            live_path = root / edit.relative_path
+            live_path = _resolve_within(root, edit.relative_path)
             if edit.kind is ChangeKind.DELETED:
                 live_path.unlink(missing_ok=True)
             else:
@@ -318,7 +343,7 @@ def run_convergence(
         def create_provider(_name: str) -> ScriptedProvider:
             return ScriptedProvider(tests=[scenario.regression_test], fixes=[scenario.proposed_fix])
 
-        live_path = root / bug_edit.relative_path
+        live_path = _resolve_within(root, bug_edit.relative_path)
         iterations: list[IterationOutcome] = []
 
         for iteration_index in range(repeats):

@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from shadowci.config import ShadowCIConfig
 from shadowci.events import ChangeKind, FileChangeEvent
-from shadowci.shadow_worktree import ShadowWorktree
+from shadowci.shadow_worktree import ShadowWorktree, ShadowWorktreeError
 
 
 def _config(repo: Path) -> ShadowCIConfig:
@@ -91,3 +93,33 @@ def test_remove_tears_down_worktree(git_repo: Path):
     worktree.remove()
 
     assert worktree.exists() is False
+
+
+def test_sync_rejects_write_outside_project_root(tmp_path: Path, git_repo: Path):
+    config = _config(git_repo)
+    worktree = ShadowWorktree(config)
+    worktree.ensure_created()
+
+    outside_file = tmp_path / "outside" / "secret.txt"
+    outside_file.parent.mkdir(parents=True)
+    outside_file.write_text("not part of the project\n")
+
+    with pytest.raises(ShadowWorktreeError):
+        worktree.sync([FileChangeEvent(path=outside_file, kind=ChangeKind.MODIFIED)])
+
+    assert outside_file.read_text() == "not part of the project\n"
+
+
+def test_sync_rejects_delete_outside_project_root(tmp_path: Path, git_repo: Path):
+    config = _config(git_repo)
+    worktree = ShadowWorktree(config)
+    worktree.ensure_created()
+
+    outside_file = tmp_path / "outside" / "secret.txt"
+    outside_file.parent.mkdir(parents=True)
+    outside_file.write_text("not part of the project\n")
+
+    with pytest.raises(ShadowWorktreeError):
+        worktree.sync([FileChangeEvent(path=outside_file, kind=ChangeKind.DELETED)])
+
+    assert outside_file.exists()  # the escape attempt must not delete it
