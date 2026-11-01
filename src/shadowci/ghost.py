@@ -24,7 +24,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
-from shadowci.checks.base import CheckRunner
+from shadowci.checks.base import CheckRunner, clear_bytecode_cache
 from shadowci.checks.lint_runner import RuffRunner
 from shadowci.checks.pytest_runner import PytestRunner
 from shadowci.checks.suite import run_checks
@@ -117,6 +117,7 @@ class GhostPatchBuilder:
                     f"proposed fix failed to apply: {applied.stderr.strip()}"
                 )
 
+            clear_bytecode_cache(shadow_path)
             confirmation = self._confirm_no_regressions(shadow_path)
         except GhostPatchError:
             test_path.unlink(missing_ok=True)

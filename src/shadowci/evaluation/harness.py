@@ -22,7 +22,6 @@ Two replay modes:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +29,7 @@ from tempfile import TemporaryDirectory
 
 from shadowci import pipeline
 from shadowci.changeset import ChangeSetDetector
+from shadowci.checks.base import clear_bytecode_cache
 from shadowci.config import ShadowCIConfig
 from shadowci.events import ChangeKind, FileChangeEvent
 from shadowci.evaluation.scenarios import Scenario
@@ -59,19 +59,6 @@ def _init_repo(root: Path, initial_files: dict[str, str]) -> None:
 
     _run_git(["add", "-A"], cwd=root)
     _run_git(["commit", "-q", "-m", "initial"], cwd=root)
-
-
-def _clear_bytecode_cache(root: Path) -> None:
-    """Delete every `__pycache__` under `root`.
-
-    `run_convergence` rewrites the same module path with same-length buggy
-    and fixed content, over and over, faster than the filesystem's mtime
-    resolution can distinguish — without this, a stale compiled `.pyc` from
-    a previous iteration can get served for the next one, making checks
-    pass or fail against the wrong source.
-    """
-    for cache_dir in root.rglob("__pycache__"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 def _build_config(root: Path, debounce_seconds: float, idle_seconds: float) -> ShadowCIConfig:
@@ -176,6 +163,7 @@ def run_scenario(
             if not touched:
                 continue
 
+            clear_bytecode_cache(worktree.path)
             result = pipeline.run_checks_and_maybe_escalate(
                 changeset, worktree, config, create_provider
             )
@@ -352,7 +340,7 @@ def run_convergence(
                 continue
 
             worktree.sync(list(changeset.events))
-            _clear_bytecode_cache(worktree.path)
+            clear_bytecode_cache(worktree.path)
             result = pipeline.run_checks_and_maybe_escalate(
                 changeset, worktree, config, create_provider
             )

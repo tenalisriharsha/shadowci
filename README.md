@@ -237,7 +237,7 @@ through the same code the TUI uses) by `scripts/capture_screenshots.py`
 
 ## Status
 
-ShadowCI's planned feature set is complete and fully tested (149 tests):
+ShadowCI's planned feature set is complete and fully tested (152 tests):
 
 - Project scaffold, core data model, file watcher, change-set detector, and
   shadow git worktree.
