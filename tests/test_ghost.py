@@ -183,6 +183,44 @@ def test_apply_to_live_tree_tolerates_unrelated_edits_made_meanwhile(git_repo: P
     assert (git_repo / "unrelated.py").read_text() == "VALUE = 1\n"
 
 
+def test_run_git_apply_accepts_a_diff_missing_its_final_newline(git_repo: Path):
+    (git_repo / "app.py").write_text(_BUGGY_APP)
+    diff_without_trailing_newline = _VALID_FIX.rstrip("\n")
+    assert not diff_without_trailing_newline.endswith("\n")
+
+    result = ghost_module._run_git_apply(
+        diff_without_trailing_newline, git_repo, check_only=True
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+def test_run_git_apply_still_works_when_the_diff_already_ends_with_a_newline(git_repo: Path):
+    (git_repo / "app.py").write_text(_BUGGY_APP)
+    assert _VALID_FIX.endswith("\n")
+
+    result = ghost_module._run_git_apply(_VALID_FIX, git_repo, check_only=True)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+def test_build_accepts_a_proposed_fix_missing_its_final_newline(git_repo: Path):
+    """Mirrors what real model providers return after stripping output
+    (see the `claude-cli` provider): a correct diff with no trailing
+    newline must still be accepted, not rejected as a corrupt patch."""
+    worktree, changeset = _sync_buggy_app(git_repo)
+    fix_without_trailing_newline = _VALID_FIX.rstrip("\n")
+
+    patch = GhostPatchBuilder(worktree).build(
+        changeset, _FAILING_CHECKS, _REGRESSION_TEST, fix_without_trailing_newline
+    )
+
+    assert "return a + b" in patch.diff
+    assert patch.evidence.all_checks_passed
+
+
 def test_build_survives_a_same_mtime_bytecode_collision(git_repo: Path, monkeypatch):
     """A fix that's the same byte length as the bug it replaces can land on
     the exact mtime Python already cached a compiled module under, serving

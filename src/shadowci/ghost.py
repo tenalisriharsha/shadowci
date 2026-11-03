@@ -51,6 +51,8 @@ def _run_git_apply(diff: str, cwd: Path, check_only: bool) -> subprocess.Complet
     if check_only:
         args.append("--check")
     args.append("-")
+    if diff and not diff.endswith("\n"):
+        diff += "\n"
     return subprocess.run(args, cwd=cwd, input=diff, capture_output=True, text=True)
 
 
