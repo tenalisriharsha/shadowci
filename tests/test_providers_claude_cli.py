@@ -59,6 +59,28 @@ def test_timeout_raises_provider_error(monkeypatch):
         provider.propose_fix(_CHANGESET, _FAILING)
 
 
+def test_write_regression_test_strips_markdown_fence(monkeypatch):
+    fenced = "```python\ndef test_average():\n    assert 1 == 1\n```"
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout=fenced))
+    provider = ClaudeCLIProvider()
+
+    test_source = provider.write_regression_test(_CHANGESET, _FAILING)
+
+    assert test_source == "def test_average():\n    assert 1 == 1"
+    compile(test_source, "t.py", "exec")
+
+
+def test_propose_fix_strips_diff_fence(monkeypatch):
+    fenced = "```diff\n--- a/x\n+++ b/x\n```"
+    monkeypatch.setattr(subprocess, "run", _fake_run(stdout=fenced))
+    provider = ClaudeCLIProvider()
+
+    fix = provider.propose_fix(_CHANGESET, _FAILING)
+
+    assert fix.startswith("---")
+    assert "```" not in fix
+
+
 def test_nonzero_exit_raises_provider_error(monkeypatch):
     def _run(args, capture_output, text, timeout):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="auth error")

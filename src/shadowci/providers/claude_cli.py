@@ -12,6 +12,7 @@ import subprocess
 
 from shadowci.events import ChangeSet, CheckResult
 from shadowci.providers.base import LLMProvider
+from shadowci.providers.fences import strip_code_fence
 from shadowci.providers.prompts import build_fix_prompt, build_test_prompt
 
 
@@ -57,4 +58,4 @@ class ClaudeCLIProvider(LLMProvider):
             raise ClaudeCLIProviderError(
                 f"'{self._binary} -p' exited {result.returncode}: {result.stderr.strip()}"
             )
-        return result.stdout.strip()
+        return strip_code_fence(result.stdout.strip())
