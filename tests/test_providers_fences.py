@@ -37,3 +37,36 @@ def test_strip_code_fence_preserves_backticks_inside_the_code():
 
     assert stripped == "def test_repr():\n    assert repr('a') == '`a`'"
     compile(stripped, "t.py", "exec")
+
+
+def test_strip_code_fence_extracts_single_fence_surrounded_by_prose():
+    reply = (
+        "Here is the regression test:\n"
+        "```python\n"
+        "def test_x():\n"
+        "    assert 1 == 1\n"
+        "```\n"
+        "It covers the failing case."
+    )
+
+    stripped = strip_code_fence(reply)
+
+    assert stripped == "def test_x():\n    assert 1 == 1"
+    compile(stripped, "t.py", "exec")
+
+
+def test_strip_code_fence_leaves_text_with_two_fenced_blocks_unchanged():
+    reply = (
+        "First:\n"
+        "```python\n"
+        "def test_a():\n"
+        "    assert True\n"
+        "```\n"
+        "Second:\n"
+        "```python\n"
+        "def test_b():\n"
+        "    assert True\n"
+        "```\n"
+    )
+
+    assert strip_code_fence(reply) == reply
