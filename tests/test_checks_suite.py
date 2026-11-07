@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import shadowci.checks.lint_runner as lint_runner
+import shadowci.checks.type_checker as type_checker
 from shadowci.checks.pytest_runner import PytestRunner
 from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.checks.targeted import TargetedTestRunner
@@ -31,7 +33,13 @@ def test_falls_back_to_full_pytest_when_nothing_matches(tmp_path: Path):
     assert [runner.name for runner in runners] == ["pytest", "mypy", "ruff"]
 
 
-def test_run_checks_runs_every_runner_in_order(tmp_path: Path):
+def test_run_checks_runs_every_runner_in_order(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        type_checker, "run_subprocess", lambda args, cwd: (0, "Success: no issues found\n", 0.1)
+    )
+    monkeypatch.setattr(
+        lint_runner, "run_subprocess", lambda args, cwd: (0, "All checks passed!\n", 0.1)
+    )
     changeset = _changeset(tmp_path / "src" / "foo.py")
     runners = build_check_runners(changeset, tmp_path)
 

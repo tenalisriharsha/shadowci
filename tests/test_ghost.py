@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import shadowci.checks.lint_runner as lint_runner
+import shadowci.checks.type_checker as type_checker
 import shadowci.ghost as ghost_module
 from shadowci.config import ShadowCIConfig
 from shadowci.events import ChangeKind, ChangeSet, CheckResult, FileChangeEvent
@@ -53,6 +55,19 @@ _VALID_FIX = (
 _FAILING_CHECKS = (CheckResult(name="pytest-targeted", passed=False, output="AssertionError"),)
 
 
+def _stub_lint_and_type_checks(monkeypatch) -> None:
+    """Ghost-patch confirmation must depend on pytest reproducing/fixing the
+    bug, not on whatever ruff/mypy happen to say about the tiny generated
+    fixtures — those tools may be absent, or present and flagging unrelated
+    style nits in throwaway test strings like `_REGRESSION_TEST`."""
+    monkeypatch.setattr(
+        type_checker, "run_subprocess", lambda args, cwd: (0, "Success: no issues found\n", 0.1)
+    )
+    monkeypatch.setattr(
+        lint_runner, "run_subprocess", lambda args, cwd: (0, "All checks passed!\n", 0.1)
+    )
+
+
 def _config(repo: Path) -> ShadowCIConfig:
     return ShadowCIConfig(project_root=repo, shadow_dir=Path(".shadowci/shadow"))
 
@@ -68,7 +83,8 @@ def _sync_buggy_app(git_repo: Path) -> tuple[ShadowWorktree, ChangeSet]:
     return worktree, changeset
 
 
-def test_build_produces_a_verified_ghost_patch(git_repo: Path):
+def test_build_produces_a_verified_ghost_patch(git_repo: Path, monkeypatch):
+    _stub_lint_and_type_checks(monkeypatch)
     worktree, changeset = _sync_buggy_app(git_repo)
 
     patch = GhostPatchBuilder(worktree).build(
@@ -136,7 +152,10 @@ def test_build_rejects_a_fix_that_regresses_something_else(git_repo: Path):
         assert "full suite still fails" in str(exc)
 
 
-def test_apply_to_live_tree_writes_the_fix_and_the_regression_test(git_repo: Path):
+def test_apply_to_live_tree_writes_the_fix_and_the_regression_test(
+    git_repo: Path, monkeypatch
+):
+    _stub_lint_and_type_checks(monkeypatch)
     worktree, changeset = _sync_buggy_app(git_repo)
     patch = GhostPatchBuilder(worktree).build(
         changeset, _FAILING_CHECKS, _REGRESSION_TEST, _VALID_FIX
@@ -150,7 +169,10 @@ def test_apply_to_live_tree_writes_the_fix_and_the_regression_test(git_repo: Pat
     assert ghost_tests[0].read_text() == _REGRESSION_TEST
 
 
-def test_apply_to_live_tree_refuses_a_patch_that_no_longer_applies(git_repo: Path):
+def test_apply_to_live_tree_refuses_a_patch_that_no_longer_applies(
+    git_repo: Path, monkeypatch
+):
+    _stub_lint_and_type_checks(monkeypatch)
     worktree, changeset = _sync_buggy_app(git_repo)
     patch = GhostPatchBuilder(worktree).build(
         changeset, _FAILING_CHECKS, _REGRESSION_TEST, _VALID_FIX
@@ -168,7 +190,10 @@ def test_apply_to_live_tree_refuses_a_patch_that_no_longer_applies(git_repo: Pat
     assert (git_repo / "app.py").read_text() == "def add(a, b):\n    return (a + b) + 1\n"
 
 
-def test_apply_to_live_tree_tolerates_unrelated_edits_made_meanwhile(git_repo: Path):
+def test_apply_to_live_tree_tolerates_unrelated_edits_made_meanwhile(
+    git_repo: Path, monkeypatch
+):
+    _stub_lint_and_type_checks(monkeypatch)
     worktree, changeset = _sync_buggy_app(git_repo)
     patch = GhostPatchBuilder(worktree).build(
         changeset, _FAILING_CHECKS, _REGRESSION_TEST, _VALID_FIX
@@ -206,10 +231,11 @@ def test_run_git_apply_still_works_when_the_diff_already_ends_with_a_newline(git
     assert result.stderr == ""
 
 
-def test_build_accepts_a_proposed_fix_missing_its_final_newline(git_repo: Path):
+def test_build_accepts_a_proposed_fix_missing_its_final_newline(git_repo: Path, monkeypatch):
     """Mirrors what real model providers return after stripping output
     (see the `claude-cli` provider): a correct diff with no trailing
     newline must still be accepted, not rejected as a corrupt patch."""
+    _stub_lint_and_type_checks(monkeypatch)
     worktree, changeset = _sync_buggy_app(git_repo)
     fix_without_trailing_newline = _VALID_FIX.rstrip("\n")
 

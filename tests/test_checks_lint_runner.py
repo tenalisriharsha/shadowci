@@ -4,7 +4,11 @@ import shadowci.checks.lint_runner as lint_runner
 from shadowci.checks.lint_runner import RuffRunner
 
 
-def test_skips_when_ruff_not_installed(tmp_path: Path):
+def test_skips_when_ruff_not_installed(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        lint_runner, "run_subprocess", lambda args, cwd: (1, "No module named ruff\n", 0.1)
+    )
+
     result = RuffRunner().run(tmp_path)
 
     assert result.name == "ruff"

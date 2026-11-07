@@ -4,7 +4,11 @@ import shadowci.checks.type_checker as type_checker
 from shadowci.checks.type_checker import MypyRunner
 
 
-def test_skips_when_mypy_not_installed(tmp_path: Path):
+def test_skips_when_mypy_not_installed(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        type_checker, "run_subprocess", lambda args, cwd: (1, "No module named mypy\n", 0.1)
+    )
+
     result = MypyRunner().run(tmp_path)
 
     assert result.name == "mypy"
