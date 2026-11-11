@@ -32,6 +32,23 @@ for a patch's hex filename in scrollback or a file explorer. `ghosts
 flag that acts on the newest ready patch instead of needing the filename
 spelled out.
 
+Not every verified fix is safe to save and apply, though. If a fix would
+put back lines the user's own edit just *added* — and the check that
+failed is a genuine assertion failure, not a crash — that's usually an
+on-purpose behavior change, undone by the "natural" fix. ShadowCI never
+silently saves that as a verified fix. Instead it saves two verified
+options under one pair: `keep old behaviour` (the revert) and `update the
+test` (a deterministic rewrite of the failing test's own expectation to
+match the new behavior — no model judgement, the actual result is executed
+for real in the shadow worktree), and `watch`/`radar` ask which one you
+want instead of picking for you. `shadowci ghosts` lists the pair with a
+`[question]` label; applying either one with `apply-ghost` retires its
+sibling without recording a signal for it. Crash-type failures
+(`NameError`, `ImportError`, `SyntaxError`, `IndentationError`,
+`ModuleNotFoundError`, or any other collection error) are exempt from this
+— there, the code never even ran, so restoring the committed lines is
+simply correct.
+
 Every verified patch also feeds an interruption policy: `apply-ghost`,
 `reject-ghost`, and `ignore-ghost` each record what you actually did with a
 fix, grouped by the kind of check that originally failed. With no history
@@ -51,17 +68,21 @@ sessions — some with a synthetically injected bug, some clean edits that
 should never trigger anything — through that exact same pipeline on a
 simulated clock, and reports detection latency, precision, accept rate,
 false interruptions, and `reverted_user_change` with no human in the loop.
-That last metric counts a saved, verified fix whose diff would put back
-lines the user had deliberately changed — the case where a confidently
+That last metric would count a saved, verified fix whose diff put back
+lines the user had deliberately added — the case where a confidently
 "verified" fix is still the wrong call because the edit broke an old test
-on purpose, exercised by the (not built-in) `intentional-behavior-change`
-scenario in `shadowci.evaluation.scenarios`. The built-in suite also
-includes `garbage-code` and `garbage-code-import-error`: edits that leave
-`calc.py` unable to even import (a `NameError`/`ImportError`, not a logic
-bug), whose correct fix happens to restore the exact lines the user's edit
-changed. They pin down the opposite case — that restoring HEAD's lines is
-sometimes simply the right fix for a crash, so `reverted_user_change` must
-never flag it.
+on purpose. The pipeline's own revert check (above) now catches that
+itself and asks instead of ever saving such a fix, so the metric reports 0
+even for the (not built-in) `intentional-behavior-change` scenario in
+`shadowci.evaluation.scenarios` that's designed to exercise it — it stays
+as a regression guard against the pipeline ever going back to silently
+reverting. The built-in suite also includes `garbage-code` and
+`garbage-code-import-error`: edits that leave `calc.py` unable to even
+import (a `NameError`/`ImportError`, not a logic bug), whose correct fix
+happens to restore the exact lines the user's edit changed. They pin down
+the opposite case — that restoring HEAD's lines is sometimes simply the
+right fix for a crash, so `reverted_user_change` must never flag it, and
+the pipeline's revert check must never turn it into a question either.
 
 `shadowci doctor` checks whether ShadowCI can actually work in the current
 project — is it a git repository, can `shadowci.toml` be read, does the
