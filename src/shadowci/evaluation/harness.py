@@ -71,6 +71,37 @@ def _run_git(args: list[str], cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
+def _git_diff_head(cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", "diff", "HEAD"], cwd=cwd, check=True, capture_output=True, text=True
+    )
+    return result.stdout
+
+
+def _diff_added_and_removed_lines(diff_text: str) -> tuple[set[str], set[str]]:
+    """The content lines a unified diff adds and removes, headers excluded."""
+    added: set[str] = set()
+    removed: set[str] = set()
+    for line in diff_text.splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        if line.startswith("+"):
+            added.add(line[1:])
+        elif line.startswith("-"):
+            removed.add(line[1:])
+    return added, removed
+
+
+def _fix_reverts_user_change(user_diff: str, fix_diff: str) -> bool:
+    """Whether `fix_diff` puts back lines `user_diff` changed: the fix adds
+    back what the user removed, or removes what the user added (or both)."""
+    if not user_diff.strip() or not fix_diff.strip():
+        return False
+    user_added, user_removed = _diff_added_and_removed_lines(user_diff)
+    fix_added, fix_removed = _diff_added_and_removed_lines(fix_diff)
+    return bool(fix_added & user_removed) or bool(fix_removed & user_added)
+
+
 def _init_repo(root: Path, initial_files: dict[str, str]) -> None:
     root.mkdir(parents=True, exist_ok=True)
     _run_git(["init", "-q"], cwd=root)
@@ -102,6 +133,7 @@ class ChangeSetOutcome:
 
     detected_at: float
     outcome: pipeline.PipelineOutcome
+    user_diff: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +145,7 @@ class ScenarioResult:
     detected: bool = False
     detection_latency_seconds: float | None = None
     action: str | None = None  # "accept", "reject", or None
+    reverted_user_change: bool = False
 
     @property
     def true_positive(self) -> bool:
@@ -188,11 +221,12 @@ def run_scenario(
             if not touched:
                 continue
 
+            user_diff = _git_diff_head(worktree.path)
             clear_bytecode_cache(worktree.path)
             result = pipeline.run_checks_and_maybe_escalate(
                 changeset, worktree, config, create_provider
             )
-            changesets.append(ChangeSetOutcome(detected_at=now, outcome=result))
+            changesets.append(ChangeSetOutcome(detected_at=now, outcome=result, user_diff=user_diff))
 
         detected_at = next(
             (cs.detected_at for cs in changesets if cs.outcome.ghost_patch is not None),
@@ -213,12 +247,22 @@ def run_scenario(
 
         latency = None if detected_at is None else detected_at - bug_introduced_at
 
+        reverted_user_change = scenario.expected_outcome != "fix" and any(
+            changeset_outcome.outcome.ghost_patch is not None
+            and changeset_outcome.outcome.proposed_fix is not None
+            and _fix_reverts_user_change(
+                changeset_outcome.user_diff, changeset_outcome.outcome.proposed_fix
+            )
+            for changeset_outcome in changesets
+        )
+
         return ScenarioResult(
             scenario=scenario,
             changesets=tuple(changesets),
             detected=detected_at is not None,
             detection_latency_seconds=latency,
             action=action,
+            reverted_user_change=reverted_user_change,
         )
 
 
@@ -260,6 +304,10 @@ class EvaluationReport:
         accepts = sum(1 for result in self.results if result.action == "accept")
         total_actions = sum(1 for result in self.results if result.action is not None)
         return None if total_actions == 0 else accepts / total_actions
+
+    @property
+    def reverted_user_change(self) -> int:
+        return sum(1 for result in self.results if result.reverted_user_change)
 
     @property
     def mean_detection_latency_seconds(self) -> float | None:
