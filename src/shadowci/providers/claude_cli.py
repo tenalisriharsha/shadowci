@@ -66,13 +66,18 @@ class ClaudeCLIProvider(LLMProvider):
     ) -> str:
         return self._run(build_fix_prompt(changeset, check_results))
 
-    def _run(self, prompt: str) -> str:
+    def ping(self) -> None:
+        """Make one trivial `claude -p` call with a short timeout, for `doctor`."""
+        self._run("ping", timeout_seconds=30.0)
+
+    def _run(self, prompt: str, timeout_seconds: float | None = None) -> str:
+        timeout = self._timeout_seconds if timeout_seconds is None else timeout_seconds
         try:
             result = subprocess.run(
                 [self._binary, "-p", prompt],
                 capture_output=True,
                 text=True,
-                timeout=self._timeout_seconds,
+                timeout=timeout,
             )
         except FileNotFoundError as exc:
             raise ClaudeCLIProviderError(
@@ -82,7 +87,7 @@ class ClaudeCLIProvider(LLMProvider):
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise ClaudeCLIProviderError(
-                f"'{self._binary} -p' timed out after {self._timeout_seconds}s"
+                f"'{self._binary} -p' timed out after {timeout}s"
             ) from exc
 
         if result.returncode != 0:

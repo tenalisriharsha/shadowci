@@ -653,6 +653,71 @@ def main() -> None:
             browser,
         )
 
+        # 19. doctor — a healthy project reports OK for every check
+        cmd = [PYTHON, "-m", "shadowci", "doctor", "."]
+        result = run(cmd, cwd=demo_repo)
+        shot(
+            render(
+                label(demo_repo),
+                "shadowci doctor .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci doctor — healthy project",
+            ),
+            OUT_DIR / "19-doctor.png",
+            browser,
+        )
+
+        # 20-21. doctor finds a missing shadow worktree and a stale saved
+        # patch, each with a `Try:` line; --fix repairs both without
+        # touching app.py.
+        doctor_repo = Path(tempfile.gettempdir()) / "shadowci-doctor-repo"
+        shutil.rmtree(doctor_repo, ignore_errors=True)
+        doctor_repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=doctor_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Demo User"], cwd=doctor_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "demo@example.com"], cwd=doctor_repo, check=True)
+        (doctor_repo / "app.py").write_text("def add(a, b):\n    return a + b\n")
+        subprocess.run(["git", "add", "app.py"], cwd=doctor_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=doctor_repo, check=True)
+
+        stale_ghost_dir = doctor_repo / ".shadowci" / "ghost"
+        stale_ghost_dir.mkdir(parents=True)
+        (stale_ghost_dir / "staleaa003.patch").write_text(
+            "--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n-    return a + b + 999\n+    return a + b\n"
+        )
+        (stale_ghost_dir / "staleaa003.json").write_text(
+            '{"digest": "staleaa003", "fingerprint": "pytest-targeted", '
+            '"summary": "a stale fix from an earlier run", "files": ["app.py"]}'
+        )
+
+        cmd = [PYTHON, "-m", "shadowci", "doctor", "."]
+        result = run(cmd, cwd=doctor_repo)
+        shot(
+            render(
+                label(doctor_repo),
+                "shadowci doctor .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci doctor — missing worktree + stale patch",
+            ),
+            OUT_DIR / "20-doctor-problems.png",
+            browser,
+        )
+
+        cmd = [PYTHON, "-m", "shadowci", "doctor", ".", "--fix"]
+        result = run(cmd, cwd=doctor_repo)
+        shot(
+            render(
+                label(doctor_repo),
+                "shadowci doctor . --fix",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci doctor --fix — repaired",
+            ),
+            OUT_DIR / "21-doctor-fix.png",
+            browser,
+        )
+        shutil.rmtree(doctor_repo, ignore_errors=True)
+
         browser.close()
 
     shutil.rmtree(demo_repo, ignore_errors=True)

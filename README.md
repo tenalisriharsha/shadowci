@@ -62,6 +62,8 @@ pip install -e ".[dev]"
 cd /path/to/your/project   # must be a git repository
 shadowci init                # writes shadowci.toml and creates the shadow worktree
 shadowci status               # inspect current configuration
+shadowci doctor                # diagnose problems (login, worktree, stale patches) and print the fix
+shadowci doctor --fix           # apply the safe fixes: recreate the worktree, discard stale patches
 shadowci watch                 # watch for changes, sync them, run checks, escalate on failure
 shadowci watch --skip-checks    # just watch and sync, skip the check/escalation step
 shadowci radar                   # the same pipeline as a live terminal dashboard
@@ -88,6 +90,21 @@ shadowci evaluate                      # replay the built-in scenario suite and 
 **`shadowci status`** — inspect the active configuration.
 
 ![shadowci status](docs/screenshots/03-status.png)
+
+**`shadowci doctor`** — one line per check (git repository, config,
+shadow worktree, LLM provider, optional tooling, saved ghost patches),
+marked `OK`/`WARN`/`FAIL` with a `Try:` line for anything not `OK`.
+
+![shadowci doctor on a healthy project](docs/screenshots/19-doctor.png)
+
+**`shadowci doctor` finds problems, `--fix` repairs the safe ones** — a
+missing shadow worktree and a stale saved patch are both reported with
+the exact command to fix them; `--fix` recreates the worktree and
+discards the stale patch without ever touching a project source file.
+
+![shadowci doctor reporting a missing worktree and a stale patch](docs/screenshots/20-doctor-problems.png)
+
+![shadowci doctor --fix repairing them](docs/screenshots/21-doctor-fix.png)
 
 **`shadowci watch`** — detects a file change, waits for it to settle, syncs
 it into the shadow worktree, and runs tests/type-checker/linter there —
@@ -280,6 +297,11 @@ ShadowCI's planned feature set is complete and fully tested (152 tests):
   (optionally synthetic-bug-injected) sessions through the real pipeline on
   a simulated clock and reports detection latency, precision, accept rate,
   and false interruptions with no human in the loop.
+- `shadowci doctor`: diagnoses whether ShadowCI can work in the project —
+  git repository, config, shadow worktree, LLM provider reachability,
+  optional tooling, saved ghost patches — printing a `Try:` fix for
+  anything not `OK`; `doctor --fix` applies the safe fixes (recreate the
+  worktree, discard stale patches) without ever touching a source file.
 
 See [PROGRESS.md](PROGRESS.md) for the phase-by-phase build history and
 [DAILY_REPORT.md](DAILY_REPORT.md) for a summary of what was built, test

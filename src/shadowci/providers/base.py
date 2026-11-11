@@ -34,3 +34,13 @@ class LLMProvider(ABC):
     ) -> str:
         """Return a unified diff that fixes the failure in the shadow worktree."""
         raise NotImplementedError
+
+    def ping(self) -> None:
+        """A trivial reachability check `doctor` can run without a real `ChangeSet`.
+
+        Raises on failure; the default no-op assumes a provider that needs
+        no live call (or that doesn't have a check yet) is reachable.
+        Providers backed by an external process or service override this
+        with one minimal real call.
+        """
+        return

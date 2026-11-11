@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+from shadowci import doctor as doctor_module
 from shadowci import pipeline
 from shadowci.changeset import ChangeSetDetector
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
@@ -79,6 +80,28 @@ def _cmd_status(args: argparse.Namespace) -> int:
         f"min signals={config.interruption_min_signals}"
     )
     return 0
+
+
+def _print_doctor_check(check: doctor_module.DoctorCheck) -> None:
+    lines = check.detail.splitlines() or [""]
+    print(f"[{check.status}] {check.name}: {lines[0]}")
+    for line in lines[1:]:
+        print(f"  {line}")
+    if check.status != "OK" and check.try_hint:
+        print(f"  Try: {check.try_hint}")
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+
+    if args.fix:
+        doctor_module.apply_safe_fixes(root)
+
+    checks = doctor_module.run_checks(root)
+    for check in checks:
+        _print_doctor_check(check)
+
+    return 1 if any(check.status == "FAIL" for check in checks) else 0
 
 
 def _print_check_result(result: CheckResult) -> None:
@@ -417,6 +440,17 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="show current configuration")
     status_parser.add_argument("path", nargs="?", default=".")
     status_parser.set_defaults(func=_cmd_status)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="diagnose problems (expired login, missing worktree, stale patches) and print the fix"
+    )
+    doctor_parser.add_argument("path", nargs="?", default=".")
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="apply safe fixes: recreate the shadow worktree, discard stale ghost patches",
+    )
+    doctor_parser.set_defaults(func=_cmd_doctor)
 
     watch_parser = subparsers.add_parser("watch", help="watch for changes and sync the shadow worktree")
     watch_parser.add_argument("path", nargs="?", default=".")
