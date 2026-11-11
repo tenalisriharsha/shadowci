@@ -200,9 +200,31 @@ def _cmd_radar(args: argparse.Namespace) -> int:
     return tui.run(config, skip_checks=args.skip_checks, max_cycles=args.max_cycles)
 
 
+def _resolve_ghost_target(args: argparse.Namespace, root: Path) -> Path | None:
+    """The patch file an apply/reject/ignore-ghost invocation should act on.
+
+    With `--latest`, that's the newest saved patch that still applies to
+    the live tree; returns None (and prints why) when there isn't one.
+    Without it, falls back to the explicit `patch_file` argument.
+    """
+    if args.latest:
+        patch_file = pipeline.latest_ready_ghost_patch(root)
+        if patch_file is None:
+            print("no ready ghost patch to apply", file=sys.stderr)
+            return None
+        return patch_file
+
+    if not args.patch_file:
+        print("error: patch_file is required unless --latest is given", file=sys.stderr)
+        return None
+    return Path(args.patch_file).resolve()
+
+
 def _cmd_apply_ghost(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
-    patch_file = Path(args.patch_file).resolve()
+    patch_file = _resolve_ghost_target(args, root)
+    if patch_file is None:
+        return 1
 
     result = pipeline.accept_patch(root, patch_file)
     if not result.ok:
@@ -215,7 +237,9 @@ def _cmd_apply_ghost(args: argparse.Namespace) -> int:
 
 def _cmd_reject_ghost(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
-    patch_file = Path(args.patch_file).resolve()
+    patch_file = _resolve_ghost_target(args, root)
+    if patch_file is None:
+        return 1
 
     result = pipeline.reject_patch(root, patch_file)
     if not result.ok:
@@ -228,7 +252,9 @@ def _cmd_reject_ghost(args: argparse.Namespace) -> int:
 
 def _cmd_ignore_ghost(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
-    patch_file = Path(args.patch_file).resolve()
+    patch_file = _resolve_ghost_target(args, root)
+    if patch_file is None:
+        return 1
 
     result = pipeline.ignore_patch(root, patch_file)
     if not result.ok:
@@ -236,6 +262,32 @@ def _cmd_ignore_ghost(args: argparse.Namespace) -> int:
         return 1
 
     print(result.message)
+    return 0
+
+
+def _cmd_ghosts(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+
+    if args.clean:
+        removed = pipeline.clean_ghost_patches(root)
+        if not removed:
+            print("no stale ghost patches to remove")
+        else:
+            for name in removed:
+                print(f"removed stale ghost patch: {name}")
+        return 0
+
+    listings = pipeline.list_ghost_patches(root)
+    if not listings:
+        print("no saved ghost patches")
+        return 0
+
+    for listing in listings:
+        status = "ready" if listing.ready else "stale"
+        metadata = listing.metadata or {}
+        summary = metadata.get("summary", "(no summary)")
+        files = ", ".join(metadata.get("files", [])) or "(unknown files)"
+        print(f"{listing.digest}  [{status}]  {summary}  ({files})")
     return 0
 
 
@@ -413,23 +465,49 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser = subparsers.add_parser(
         "apply-ghost", help="apply a verified ghost patch to the live tree (records an accept signal)"
     )
-    apply_parser.add_argument("patch_file")
+    apply_parser.add_argument("patch_file", nargs="?", default=None)
     apply_parser.add_argument("path", nargs="?", default=".")
+    apply_parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="act on the newest saved ghost patch that still applies, instead of naming one",
+    )
     apply_parser.set_defaults(func=_cmd_apply_ghost)
 
     reject_parser = subparsers.add_parser(
         "reject-ghost", help="discard a saved ghost patch (records a reject signal)"
     )
-    reject_parser.add_argument("patch_file")
+    reject_parser.add_argument("patch_file", nargs="?", default=None)
     reject_parser.add_argument("path", nargs="?", default=".")
+    reject_parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="act on the newest saved ghost patch that still applies, instead of naming one",
+    )
     reject_parser.set_defaults(func=_cmd_reject_ghost)
 
     ignore_parser = subparsers.add_parser(
         "ignore-ghost", help="leave a saved ghost patch unapplied (records an ignore signal)"
     )
-    ignore_parser.add_argument("patch_file")
+    ignore_parser.add_argument("patch_file", nargs="?", default=None)
     ignore_parser.add_argument("path", nargs="?", default=".")
+    ignore_parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="act on the newest saved ghost patch that still applies, instead of naming one",
+    )
     ignore_parser.set_defaults(func=_cmd_ignore_ghost)
+
+    ghosts_parser = subparsers.add_parser(
+        "ghosts", help="list saved ghost patches and whether they still apply"
+    )
+    ghosts_parser.add_argument("path", nargs="?", default=".")
+    ghosts_parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="remove saved ghost patches that no longer apply, without recording a signal",
+    )
+    ghosts_parser.set_defaults(func=_cmd_ghosts)
 
     signals_parser = subparsers.add_parser(
         "signals", help="show recorded accept/reject/ignore history and current policy scores"
