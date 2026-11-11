@@ -21,7 +21,12 @@ from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.config import ShadowCIConfig
 from shadowci.escalation import EscalationPolicy
 from shadowci.events import ChangeSet, CheckResult, GhostPatch, Signal
-from shadowci.ghost import GhostPatchBuilder, GhostPatchError, apply_to_live_tree
+from shadowci.ghost import (
+    GhostPatchBuilder,
+    GhostPatchError,
+    apply_to_live_tree,
+    check_applies_to_live_tree,
+)
 from shadowci.interruption import InterruptionDecision, InterruptionPolicy, fingerprint_for_patch
 from shadowci.providers.base import LLMProvider
 from shadowci.shadow_worktree import ShadowWorktree
@@ -108,6 +113,63 @@ def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ..
     )
     retired = _retire_superseded_patches(ghost_dir, patch_path, files)
     return patch_path, retired
+
+
+@dataclass(frozen=True)
+class GhostPatchListing:
+    """One saved ghost patch as seen by `ghosts`: where it lives, what it
+    claims to do, and whether it would still apply to the live tree."""
+
+    digest: str
+    patch_path: Path
+    metadata: dict | None
+    ready: bool
+
+
+def list_ghost_patches(root: Path) -> tuple[GhostPatchListing, ...]:
+    """Every saved ghost patch under `root`, newest first, each checked
+    against the live tree right now (`ready` vs `stale`)."""
+    ghost_dir = root / GHOST_PATCH_DIRNAME
+    if not ghost_dir.is_dir():
+        return ()
+
+    patch_paths = sorted(
+        ghost_dir.glob("*.patch"), key=lambda path: path.stat().st_mtime, reverse=True
+    )
+    listings = []
+    for patch_path in patch_paths:
+        diff = patch_path.read_text()
+        listings.append(
+            GhostPatchListing(
+                digest=patch_path.stem,
+                patch_path=patch_path,
+                metadata=load_patch_metadata(patch_path),
+                ready=check_applies_to_live_tree(diff, root),
+            )
+        )
+    return tuple(listings)
+
+
+def latest_ready_ghost_patch(root: Path) -> Path | None:
+    """The newest saved ghost patch that still applies cleanly, if any."""
+    for listing in list_ghost_patches(root):
+        if listing.ready:
+            return listing.patch_path
+    return None
+
+
+def clean_ghost_patches(root: Path) -> tuple[str, ...]:
+    """Remove every saved ghost patch that no longer applies to the live
+    tree. Stale patches are discarded outright, not rejected — no signal
+    is recorded, since the user never actually saw or judged them."""
+    removed = []
+    for listing in list_ghost_patches(root):
+        if listing.ready:
+            continue
+        metadata_path(listing.patch_path).unlink(missing_ok=True)
+        listing.patch_path.unlink(missing_ok=True)
+        removed.append(listing.patch_path.name)
+    return tuple(removed)
 
 
 @dataclass(frozen=True)
