@@ -58,6 +58,7 @@ class ShadowWorktree:
             return self._shadow_path
 
         self._shadow_path.parent.mkdir(parents=True, exist_ok=True)
+        _run_git(["worktree", "prune"], cwd=self._root)
 
         branches = _run_git(["branch", "--list", SHADOW_BRANCH], cwd=self._root)
         if not branches.stdout.strip():

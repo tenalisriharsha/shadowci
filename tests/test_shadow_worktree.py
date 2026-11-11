@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -27,6 +28,20 @@ def test_ensure_created_is_idempotent(git_repo: Path):
     first = worktree.ensure_created()
     second = worktree.ensure_created()
     assert first == second
+
+
+def test_ensure_created_recovers_after_manual_deletion(git_repo: Path):
+    worktree = ShadowWorktree(_config(git_repo))
+    worktree.ensure_created()
+    assert worktree.exists() is True
+
+    shutil.rmtree(worktree.path)
+    assert worktree.exists() is False
+
+    recreated = worktree.ensure_created()
+    assert recreated == git_repo / ".shadowci" / "shadow"
+    assert worktree.exists() is True
+    assert (recreated / "app.py").exists()
 
 
 def test_sync_copies_live_bytes_into_shadow_tree(git_repo: Path):
