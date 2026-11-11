@@ -13,6 +13,7 @@ from shadowci.evaluation.scenarios import (
     Scenario,
     built_in_scenarios,
     clean_comment_scenario,
+    intentional_behavior_change_scenario,
     off_by_one_bound_scenario,
     off_by_one_operator_scenario,
 )
@@ -75,6 +76,28 @@ def test_evaluation_report_metrics_are_none_with_no_data():
     assert report.false_interruption_rate is None
     assert report.accept_rate is None
     assert report.mean_detection_latency_seconds is None
+
+
+def test_evaluation_report_reverted_user_change_is_zero_with_no_data():
+    report = EvaluationReport(results=())
+
+    assert report.reverted_user_change == 0
+
+
+def test_run_suite_never_reverts_a_user_change_for_the_built_in_scenarios():
+    # Every built-in scenario is either a genuine bug (reverting it back to
+    # clean is the correct fix) or a clean edit (no fix is ever produced).
+    report = run_suite(built_in_scenarios())
+
+    assert report.reverted_user_change == 0
+
+
+def test_run_suite_flags_the_intentional_change_scenario_as_a_reverted_user_change():
+    # The scripted provider's "natural" fix undoes the user's on-purpose
+    # behavior change — exactly the false positive issue #35 measures.
+    report = run_suite((intentional_behavior_change_scenario(),))
+
+    assert report.reverted_user_change == 1
 
 
 def test_run_convergence_requires_a_bug_scenario_with_test_and_fix():
