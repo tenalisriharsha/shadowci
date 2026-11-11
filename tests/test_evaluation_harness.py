@@ -92,12 +92,20 @@ def test_run_suite_never_reverts_a_user_change_for_the_built_in_scenarios():
     assert report.reverted_user_change == 0
 
 
-def test_run_suite_flags_the_intentional_change_scenario_as_a_reverted_user_change():
-    # The scripted provider's "natural" fix undoes the user's on-purpose
-    # behavior change — exactly the false positive issue #35 measures.
+def test_run_suite_no_longer_flags_the_intentional_change_scenario_as_reverted():
+    # Issue #37: the scripted provider's "natural" fix still undoes the
+    # user's on-purpose behavior change, but the pipeline's revert check
+    # now catches that itself (assertion failure + a fix that puts back
+    # what the user just added) and asks instead of silently saving it as
+    # a verified fix. Nothing is auto-accepted as a plain fix any more, so
+    # issue #35's reverted_user_change metric — which only ever fires for a
+    # saved, proposed fix — reports 0, not a false positive.
     report = run_suite((intentional_behavior_change_scenario(),))
 
-    assert report.reverted_user_change == 1
+    assert report.reverted_user_change == 0
+    result = report.results[0]
+    assert result.detected is False
+    assert result.action is None
 
 
 def test_run_convergence_requires_a_bug_scenario_with_test_and_fix():
