@@ -134,6 +134,8 @@ def _run_checks_and_maybe_escalate(
 
     print(f"  ghost patch verified: {outcome.ghost_patch.evidence.summary}")
     print(f"  saved to {outcome.ghost_patch_path}")
+    for retired_name in outcome.retired_ghost_patches:
+        print(f"  retired superseded ghost patch: {retired_name}")
 
     decision = outcome.decision
     if decision.interrupt:

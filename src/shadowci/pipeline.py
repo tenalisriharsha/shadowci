@@ -58,9 +58,42 @@ def load_patch_metadata(patch_path: Path) -> dict | None:
     return json.loads(path.read_text())
 
 
-def save_ghost_patch(patch: GhostPatch, root: Path) -> Path:
+def _patch_target_files(patch: GhostPatch, root: Path) -> list[str]:
+    files = []
+    for path in patch.changeset.paths:
+        try:
+            files.append(path.resolve().relative_to(root.resolve()).as_posix())
+        except ValueError:
+            files.append(str(path))
+    return sorted(files)
+
+
+def _retire_superseded_patches(
+    ghost_dir: Path, new_patch_path: Path, files: list[str]
+) -> tuple[str, ...]:
+    """Remove older pending patches that target the same set of files.
+
+    No signal is recorded for a patch retired this way — it was never
+    accepted, rejected, or ignored, just displaced by a newer fix.
+    """
+    retired = []
+    for patch_path in sorted(ghost_dir.glob("*.patch")):
+        if patch_path == new_patch_path:
+            continue
+        metadata = load_patch_metadata(patch_path)
+        if metadata is None or metadata.get("files") != files:
+            continue
+        metadata_path(patch_path).unlink(missing_ok=True)
+        patch_path.unlink(missing_ok=True)
+        retired.append(patch_path.name)
+    return tuple(retired)
+
+
+def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ...]]:
     digest = hashlib.sha1(patch.diff.encode("utf-8")).hexdigest()[:10]
-    patch_path = ghost_patch_dir(root) / f"{digest}.patch"
+    ghost_dir = ghost_patch_dir(root)
+    patch_path = ghost_dir / f"{digest}.patch"
+    files = _patch_target_files(patch, root)
     patch_path.write_text(patch.diff)
     metadata_path(patch_path).write_text(
         json.dumps(
@@ -68,11 +101,13 @@ def save_ghost_patch(patch: GhostPatch, root: Path) -> Path:
                 "digest": digest,
                 "fingerprint": fingerprint_for_patch(patch),
                 "summary": patch.evidence.summary,
+                "files": files,
             },
             indent=2,
         )
     )
-    return patch_path
+    retired = _retire_superseded_patches(ghost_dir, patch_path, files)
+    return patch_path, retired
 
 
 @dataclass(frozen=True)
@@ -89,6 +124,7 @@ class PipelineOutcome:
     ghost_patch: GhostPatch | None = None
     ghost_patch_path: Path | None = None
     ghost_patch_error: str | None = None
+    retired_ghost_patches: tuple[str, ...] = ()
     decision: InterruptionDecision | None = None
 
 
@@ -152,7 +188,7 @@ def run_checks_and_maybe_escalate(
             ghost_patch_error=str(exc),
         )
 
-    patch_path = save_ghost_patch(patch, config.project_root)
+    patch_path, retired = save_ghost_patch(patch, config.project_root)
     interruption_policy = InterruptionPolicy(
         signal_store(config.project_root),
         threshold=config.interruption_threshold,
@@ -168,6 +204,7 @@ def run_checks_and_maybe_escalate(
         proposed_fix=escalation.proposed_fix,
         ghost_patch=patch,
         ghost_patch_path=patch_path,
+        retired_ghost_patches=retired,
         decision=decision,
     )
 

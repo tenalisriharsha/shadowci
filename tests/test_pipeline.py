@@ -187,6 +187,119 @@ def test_reject_patch_discards_and_records_signal(git_repo: Path):
     assert len(store.for_fingerprint("pytest")) == 1
 
 
+_FIX_2 = (
+    "--- a/app.py\n"
+    "+++ b/app.py\n"
+    "@@ -1,2 +1,2 @@\n"
+    " def add(a, b):\n"
+    "-    return a + b + 2\n"
+    "+    return a + b\n"
+)
+
+_OTHER_FIX = (
+    "--- a/other.py\n"
+    "+++ b/other.py\n"
+    "@@ -1,2 +1,2 @@\n"
+    " def sub(a, b):\n"
+    "-    return a - b - 1\n"
+    "+    return a - b\n"
+)
+_OTHER_TEST = "from other import sub\n\n\ndef test_other():\n    assert sub(5, 3) == 2\n"
+
+
+def test_second_patch_for_same_file_retires_the_first(git_repo: Path):
+    (git_repo / "tests").mkdir()
+    (git_repo / "tests" / "test_app.py").write_text(_TEST)
+    _commit_tests_dir(git_repo)
+
+    config = _config(git_repo)
+
+    worktree, changeset = _sync_changeset(git_repo, "def add(a, b):\n    return a + b + 1\n")
+    first = pipeline.run_checks_and_maybe_escalate(
+        changeset, worktree, config, lambda name: ScriptedProvider(tests=[_TEST], fixes=[_FIX])
+    )
+    assert first.ghost_patch_path is not None
+    assert first.ghost_patch_path.exists()
+    assert pipeline.metadata_path(first.ghost_patch_path).exists()
+
+    worktree2, changeset2 = _sync_changeset(git_repo, "def add(a, b):\n    return a + b + 2\n")
+    second = pipeline.run_checks_and_maybe_escalate(
+        changeset2,
+        worktree2,
+        config,
+        lambda name: ScriptedProvider(tests=[_TEST], fixes=[_FIX_2]),
+    )
+    assert second.ghost_patch_path is not None
+    assert second.ghost_patch_path.exists()
+
+    assert not first.ghost_patch_path.exists()
+    assert not pipeline.metadata_path(first.ghost_patch_path).exists()
+
+    ghost_dir = pipeline.ghost_patch_dir(git_repo)
+    pending_patches = sorted(p.name for p in ghost_dir.glob("*.patch"))
+    assert pending_patches == [second.ghost_patch_path.name]
+
+
+def test_pending_patch_for_a_different_file_is_left_alone(git_repo: Path):
+    (git_repo / "tests").mkdir()
+    (git_repo / "tests" / "test_app.py").write_text(_TEST)
+    (git_repo / "tests" / "test_other.py").write_text(_OTHER_TEST)
+    (git_repo / "other.py").write_text("def sub(a, b):\n    return a - b\n")
+    subprocess.run(["git", "add", "other.py"], cwd=git_repo, check=True, capture_output=True)
+    _commit_tests_dir(git_repo)
+
+    config = _config(git_repo)
+
+    other_file = git_repo / "other.py"
+    other_file.write_text("def sub(a, b):\n    return a - b - 1\n")
+    other_changeset = ChangeSet(
+        events=(FileChangeEvent(path=other_file, kind=ChangeKind.MODIFIED),)
+    )
+    other_worktree = ShadowWorktree(config)
+    other_worktree.sync(list(other_changeset.events))
+    other_outcome = pipeline.run_checks_and_maybe_escalate(
+        other_changeset,
+        other_worktree,
+        config,
+        lambda name: ScriptedProvider(tests=[_OTHER_TEST], fixes=[_OTHER_FIX]),
+    )
+    assert other_outcome.ghost_patch_path is not None
+    assert other_outcome.ghost_patch_path.exists()
+
+    worktree, changeset = _sync_changeset(git_repo, "def add(a, b):\n    return a + b + 1\n")
+    app_outcome = pipeline.run_checks_and_maybe_escalate(
+        changeset, worktree, config, lambda name: ScriptedProvider(tests=[_TEST], fixes=[_FIX])
+    )
+    assert app_outcome.ghost_patch_path is not None
+
+    assert other_outcome.ghost_patch_path.exists()
+    assert pipeline.metadata_path(other_outcome.ghost_patch_path).exists()
+
+
+def test_retiring_a_patch_does_not_record_a_signal(git_repo: Path):
+    (git_repo / "tests").mkdir()
+    (git_repo / "tests" / "test_app.py").write_text(_TEST)
+    _commit_tests_dir(git_repo)
+
+    config = _config(git_repo)
+
+    worktree, changeset = _sync_changeset(git_repo, "def add(a, b):\n    return a + b + 1\n")
+    pipeline.run_checks_and_maybe_escalate(
+        changeset, worktree, config, lambda name: ScriptedProvider(tests=[_TEST], fixes=[_FIX])
+    )
+
+    worktree2, changeset2 = _sync_changeset(git_repo, "def add(a, b):\n    return a + b + 2\n")
+    pipeline.run_checks_and_maybe_escalate(
+        changeset2,
+        worktree2,
+        config,
+        lambda name: ScriptedProvider(tests=[_TEST], fixes=[_FIX_2]),
+    )
+
+    store = pipeline.signal_store(git_repo)
+    assert store.all() == ()
+
+
 def test_ignore_patch_leaves_file_and_records_signal(git_repo: Path):
     patch_file = git_repo / "fix.patch"
     patch_file.write_text("irrelevant")
