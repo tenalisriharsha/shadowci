@@ -50,7 +50,12 @@ An evaluation harness (`shadowci evaluate`) replays a suite of recorded
 sessions — some with a synthetically injected bug, some clean edits that
 should never trigger anything — through that exact same pipeline on a
 simulated clock, and reports detection latency, precision, accept rate,
-and false interruptions with no human in the loop.
+false interruptions, and `reverted_user_change` with no human in the loop.
+That last metric counts a saved, verified fix whose diff would put back
+lines the user had deliberately changed — the case where a confidently
+"verified" fix is still the wrong call because the edit broke an old test
+on purpose, exercised by the (not built-in) `intentional-behavior-change`
+scenario in `shadowci.evaluation.scenarios`.
 
 `shadowci doctor` checks whether ShadowCI can actually work in the current
 project — is it a git repository, can `shadowci.toml` be read, does the
@@ -181,7 +186,8 @@ drops off the pending list immediately.
 **`shadowci evaluate`** — the evaluation harness replays a built-in suite
 of synthetic bug-injected and clean scenarios through the real pipeline on
 a simulated clock, with no human in the loop, and reports detection
-latency, precision, accept rate, and false interruptions.
+latency, precision, accept rate, false interruptions, and
+`reverted_user_change`.
 
 ![shadowci evaluate running the built-in scenario suite](docs/screenshots/17-evaluate.png)
 
@@ -298,7 +304,8 @@ ShadowCI's planned feature set is complete and fully tested (190 tests):
 - `shadowci evaluate`: an evaluation harness that replays recorded
   (optionally synthetic-bug-injected) sessions through the real pipeline on
   a simulated clock and reports detection latency, precision, accept rate,
-  and false interruptions with no human in the loop.
+  false interruptions, and `reverted_user_change` (a saved fix that would
+  undo an on-purpose user edit) with no human in the loop.
 - `shadowci doctor`: diagnoses whether ShadowCI can work in this project
   (git repo, config, shadow worktree, configured provider, pytest/mypy/
   ruff, stale ghost patches), printing `OK`/`WARN`/`FAIL` plus a `Try:` fix

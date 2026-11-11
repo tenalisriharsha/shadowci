@@ -15,6 +15,7 @@ def test_evaluate_runs_the_built_in_suite_and_reports_metrics(capsys):
     assert "false interruption rate" in out
     assert "accept rate" in out
     assert "mean detection latency" in out
+    assert "reverted_user_change" in out
 
 
 def test_evaluate_save_dir_writes_scenario_json_without_running(tmp_path: Path, capsys):

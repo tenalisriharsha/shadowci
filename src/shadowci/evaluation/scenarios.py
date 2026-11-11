@@ -32,12 +32,27 @@ from shadowci.evaluation.session import (
 
 @dataclass(frozen=True)
 class Scenario:
-    """A session plus the ground truth its replay is scored against."""
+    """A session plus the ground truth its replay is scored against.
+
+    `expected_outcome` is the explicit ground truth ("fix", "silent", or
+    "ask") the harness should eventually be scored against. `bug_expected`
+    remains the boolean existing replay logic (accept vs. reject
+    simulation) keys off, and defaults `expected_outcome` to "fix"/"silent"
+    when a scenario doesn't set it explicitly — which is also what a
+    scenario JSON file saved before this field existed loads as.
+    """
 
     session: RecordedSession
     bug_expected: bool
     regression_test: str | None = None
     proposed_fix: str | None = None
+    expected_outcome: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.expected_outcome is None:
+            object.__setattr__(
+                self, "expected_outcome", "fix" if self.bug_expected else "silent"
+            )
 
 
 def scenario_to_dict(scenario: Scenario) -> dict:
@@ -46,6 +61,7 @@ def scenario_to_dict(scenario: Scenario) -> dict:
         "bug_expected": scenario.bug_expected,
         "regression_test": scenario.regression_test,
         "proposed_fix": scenario.proposed_fix,
+        "expected_outcome": scenario.expected_outcome,
     }
 
 
@@ -55,6 +71,7 @@ def scenario_from_dict(data: dict) -> Scenario:
         bug_expected=bool(data["bug_expected"]),
         regression_test=data.get("regression_test"),
         proposed_fix=data.get("proposed_fix"),
+        expected_outcome=data.get("expected_outcome"),
     )
 
 
@@ -214,6 +231,66 @@ def clean_comment_scenario() -> Scenario:
             "from util import double\n\n\ndef test_double():\n    assert double(3) == 6\n"
         ),
         harmless_edit="def double(x):\n    # scale by two\n    return x * 2\n",
+    )
+
+
+def intentional_behavior_change_scenario() -> Scenario:
+    """A save changes `average([])` from raising to returning 0 on purpose,
+    breaking the existing test that expects the old, raising behavior.
+
+    This is not a bug scenario and not a clean one: the edit is an
+    intentional behavior change, so the "natural" fix a provider proposes
+    — restoring the old behavior — would undo exactly what the user meant
+    to do. `expected_outcome="ask"` marks that the right response is
+    neither to fix nor to stay silent, but to ask. `bug_expected=False`
+    keeps it scored as a false interruption whenever the pipeline (which
+    has no way to tell "on purpose" from "accidental") surfaces a fix
+    anyway, as it does today.
+    """
+    module_filename = "average.py"
+    test_filename = "tests/test_average.py"
+    clean_content = (
+        "def average(values):\n"
+        "    total = sum(values)\n"
+        "    return total / len(values)\n"
+    )
+    changed_content = (
+        "def average(values):\n"
+        "    if not values:\n"
+        "        return 0\n"
+        "    total = sum(values)\n"
+        "    return total / len(values)\n"
+    )
+    regression_test = (
+        "import pytest\n\n"
+        "from average import average\n\n\n"
+        "def test_average_of_empty_list_raises():\n"
+        "    with pytest.raises(ZeroDivisionError):\n"
+        "        average([])\n"
+    )
+    proposed_fix = (
+        "--- a/average.py\n+++ b/average.py\n@@ -1,5 +1,3 @@\n"
+        " def average(values):\n"
+        "-    if not values:\n"
+        "-        return 0\n"
+        "     total = sum(values)\n"
+        "     return total / len(values)\n"
+    )
+    session = RecordedSession(
+        name="intentional-behavior-change",
+        description=(
+            "a save makes average([]) return 0 on purpose instead of raising, "
+            "breaking the test that expects the old behavior"
+        ),
+        initial_files={module_filename: clean_content, test_filename: regression_test},
+        edits=(RecordedEdit(module_filename, ChangeKind.MODIFIED, 0.0, changed_content),),
+    )
+    return Scenario(
+        session=session,
+        bug_expected=False,
+        regression_test=regression_test,
+        proposed_fix=proposed_fix,
+        expected_outcome="ask",
     )
 
 
