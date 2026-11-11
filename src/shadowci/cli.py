@@ -145,6 +145,14 @@ def _run_checks_and_maybe_escalate(
 
     print("  verifying fix in shadow worktree...")
 
+    if outcome.question is not None:
+        question = outcome.question
+        print(f"  {question.message}")
+        print(f"  keep old behaviour: {question.keep_old_behavior_path.stem}")
+        print(f"  update the test: {question.update_test_path.stem}")
+        print("  choose with: shadowci apply-ghost <digest>")
+        return
+
     if outcome.ghost_patch_error is not None:
         print(f"  could not verify a ghost patch: {outcome.ghost_patch_error}", file=sys.stderr)
         return
@@ -307,7 +315,15 @@ def _cmd_ghosts(args: argparse.Namespace) -> int:
         metadata = listing.metadata or {}
         summary = metadata.get("summary", "(no summary)")
         files = ", ".join(metadata.get("files", [])) or "(unknown files)"
-        print(f"{listing.digest}  [{status}]  {summary}  ({files})")
+        if metadata.get("kind") == "question":
+            label = metadata.get("label", "question")
+            group = metadata.get("group", "?")
+            print(
+                f"{listing.digest}  [{status}]  [question: {label}, group={group}]  "
+                f"{summary}  ({files})"
+            )
+        else:
+            print(f"{listing.digest}  [{status}]  {summary}  ({files})")
     return 0
 
 

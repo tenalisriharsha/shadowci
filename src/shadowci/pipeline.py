@@ -19,6 +19,7 @@ from typing import Callable
 
 from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.config import ShadowCIConfig
+from shadowci.diffing import fix_reverts_user_change
 from shadowci.escalation import EscalationPolicy
 from shadowci.events import ChangeSet, CheckResult, GhostPatch, Signal
 from shadowci.ghost import (
@@ -29,6 +30,7 @@ from shadowci.ghost import (
 )
 from shadowci.interruption import InterruptionDecision, InterruptionPolicy, fingerprint_for_patch
 from shadowci.providers.base import LLMProvider
+from shadowci.revert_check import build_update_test_patch, diff_head, is_crash_failure
 from shadowci.shadow_worktree import ShadowWorktree
 from shadowci.signals import SignalStore
 
@@ -107,12 +109,39 @@ def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ..
                 "fingerprint": fingerprint_for_patch(patch),
                 "summary": patch.evidence.summary,
                 "files": files,
+                "kind": "fix",
             },
             indent=2,
         )
     )
     retired = _retire_superseded_patches(ghost_dir, patch_path, files)
     return patch_path, retired
+
+
+def save_question_patch(patch: GhostPatch, root: Path, group: str, label: str) -> Path:
+    """Save one verified option of a two-option question (issue #37):
+    `kind: "question"` instead of `"fix"`, sharing `group` with its
+    sibling so `accept_patch` can retire it without recording a signal."""
+    digest = hashlib.sha1(f"{group}:{label}:{patch.diff}".encode()).hexdigest()[:10]
+    ghost_dir = ghost_patch_dir(root)
+    patch_path = ghost_dir / f"{digest}.patch"
+    files = _patch_target_files(patch, root)
+    patch_path.write_text(patch.diff)
+    metadata_path(patch_path).write_text(
+        json.dumps(
+            {
+                "digest": digest,
+                "fingerprint": fingerprint_for_patch(patch),
+                "summary": patch.evidence.summary,
+                "files": files,
+                "kind": "question",
+                "group": group,
+                "label": label,
+            },
+            indent=2,
+        )
+    )
+    return patch_path
 
 
 @dataclass(frozen=True)
@@ -173,6 +202,17 @@ def clean_ghost_patches(root: Path) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
+class GhostQuestion:
+    """Two verified options surfaced instead of a silent fix (issue #37),
+    for a fix that would otherwise put back the user's own edit."""
+
+    group: str
+    message: str
+    keep_old_behavior_path: Path
+    update_test_path: Path
+
+
+@dataclass(frozen=True)
 class PipelineOutcome:
     """What one run of checks (+ maybe escalation) against a change set produced."""
 
@@ -188,6 +228,7 @@ class PipelineOutcome:
     ghost_patch_error: str | None = None
     retired_ghost_patches: tuple[str, ...] = ()
     decision: InterruptionDecision | None = None
+    question: GhostQuestion | None = None
 
 
 def run_checks_and_maybe_escalate(
@@ -232,6 +273,16 @@ def run_checks_and_maybe_escalate(
             check_results=results, failing_checks=failing, provider_name=provider.name
         )
 
+    # Issue #37: a fix that puts back the user's own edit, for a non-crash
+    # failure, must not be saved as a silent "verified fix" — unless we
+    # can't actually offer a deterministic second option, in which case
+    # there's nothing to ask and the normal fix flow below still applies.
+    update_test_patch: GhostPatch | None = None
+    if not is_crash_failure(failing) and fix_reverts_user_change(
+        diff_head(worktree.path), escalation.proposed_fix
+    ):
+        update_test_patch = build_update_test_patch(worktree, changeset, failing)
+
     try:
         builder = GhostPatchBuilder(worktree)
         patch = builder.build(
@@ -248,6 +299,17 @@ def run_checks_and_maybe_escalate(
             regression_test=escalation.regression_test,
             proposed_fix=escalation.proposed_fix,
             ghost_patch_error=str(exc),
+        )
+
+    if update_test_patch is not None:
+        question = _save_question(changeset, config.project_root, patch, update_test_patch)
+        return PipelineOutcome(
+            check_results=results,
+            failing_checks=failing,
+            provider_name=provider.name,
+            regression_test=escalation.regression_test,
+            proposed_fix=escalation.proposed_fix,
+            question=question,
         )
 
     patch_path, retired = save_ghost_patch(patch, config.project_root)
@@ -268,6 +330,30 @@ def run_checks_and_maybe_escalate(
         ghost_patch_path=patch_path,
         retired_ghost_patches=retired,
         decision=decision,
+    )
+
+
+def _save_question(
+    changeset: ChangeSet, root: Path, keep_old_behavior: GhostPatch, update_test: GhostPatch
+) -> GhostQuestion:
+    group = hashlib.sha1(
+        (keep_old_behavior.diff + update_test.diff).encode("utf-8")
+    ).hexdigest()[:10]
+    keep_path = save_question_patch(keep_old_behavior, root, group, "keep old behaviour")
+    update_path = save_question_patch(update_test, root, group, "update the test")
+
+    changed_name = changeset.paths[0].stem if changeset.paths else "the module"
+    test_files = _patch_target_files(update_test, root)
+    test_name = Path(test_files[0]).stem if test_files else "the test"
+    message = (
+        f"Your change to {changed_name}() broke {test_name}. "
+        "Update the test, or keep the old behavior?"
+    )
+    return GhostQuestion(
+        group=group,
+        message=message,
+        keep_old_behavior_path=keep_path,
+        update_test_path=update_path,
     )
 
 
@@ -299,9 +385,34 @@ def accept_patch(root: Path, patch_file: Path) -> ActionResult:
         fingerprint = metadata["fingerprint"]
         lines.append(f"recorded signal: accept (fingerprint={fingerprint!r})")
         metadata_path(patch_file).unlink(missing_ok=True)
+        sibling = _retire_question_sibling(root, metadata, patch_file)
+        if sibling is not None:
+            lines.append(f"retired sibling question option: {sibling}")
 
     patch_file.unlink(missing_ok=True)
     return ActionResult(True, "\n".join(lines), fingerprint)
+
+
+def _retire_question_sibling(root: Path, metadata: dict, accepted_patch: Path) -> str | None:
+    """When `accepted_patch` was one of a question's two options, remove
+    the other option without recording any signal for it — it was never
+    separately judged, just made moot by answering the question."""
+    if metadata.get("kind") != "question":
+        return None
+    group = metadata.get("group")
+    if group is None:
+        return None
+
+    for patch_path in sorted(ghost_patch_dir(root).glob("*.patch")):
+        if patch_path == accepted_patch:
+            continue
+        sibling_metadata = load_patch_metadata(patch_path)
+        if sibling_metadata is None or sibling_metadata.get("group") != group:
+            continue
+        metadata_path(patch_path).unlink(missing_ok=True)
+        patch_path.unlink(missing_ok=True)
+        return patch_path.name
+    return None
 
 
 def reject_patch(root: Path, patch_file: Path) -> ActionResult:
