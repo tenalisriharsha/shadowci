@@ -542,11 +542,15 @@ def main() -> None:
             poll_interval_seconds=0.05,
         )
 
-        # Pre-seed accept history for "pytest-targeted" so the interruption
-        # policy is already biased toward surfacing the next fix of that kind.
+        # Pre-seed accept history for this fix's fingerprint so the
+        # interruption policy is already biased toward surfacing the next
+        # one of its kind. Editing app.py under test_app.py, which passed
+        # at HEAD, classifies as "unclear-behavior-change" (issue #38).
         seed_store = shadowci_pipeline.signal_store(radar_repo)
         for i in range(3):
-            seed_store.record("pytest-targeted", Signal.ACCEPT, f"seed{i}")
+            seed_store.record(
+                "unclear-behavior-change:pytest-targeted", Signal.ACCEPT, f"seed{i}"
+            )
 
         engine = shadowci_radar.RadarEngine(radar_config)
         engine.ensure_worktree()

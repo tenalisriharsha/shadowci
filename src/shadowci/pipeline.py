@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Callable
 
 from shadowci.checks.suite import build_check_runners, run_checks
+from shadowci.classification import FailureClass, classify_failure
 from shadowci.config import ShadowCIConfig
-from shadowci.diffing import fix_reverts_user_change
+from shadowci.diffing import diff_touched_files, fix_reverts_user_change
 from shadowci.escalation import EscalationPolicy
 from shadowci.events import ChangeSet, CheckResult, GhostPatch, Signal
 from shadowci.ghost import (
@@ -96,7 +97,9 @@ def _retire_superseded_patches(
     return tuple(retired)
 
 
-def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ...]]:
+def save_ghost_patch(
+    patch: GhostPatch, root: Path, failure_class: str | None = None
+) -> tuple[Path, tuple[str, ...]]:
     digest = hashlib.sha1(patch.diff.encode("utf-8")).hexdigest()[:10]
     ghost_dir = ghost_patch_dir(root)
     patch_path = ghost_dir / f"{digest}.patch"
@@ -106,7 +109,7 @@ def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ..
         json.dumps(
             {
                 "digest": digest,
-                "fingerprint": fingerprint_for_patch(patch),
+                "fingerprint": fingerprint_for_patch(patch, failure_class),
                 "summary": patch.evidence.summary,
                 "files": files,
                 "kind": "fix",
@@ -118,7 +121,9 @@ def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ..
     return patch_path, retired
 
 
-def save_question_patch(patch: GhostPatch, root: Path, group: str, label: str) -> Path:
+def save_question_patch(
+    patch: GhostPatch, root: Path, group: str, label: str, failure_class: str | None = None
+) -> Path:
     """Save one verified option of a two-option question (issue #37):
     `kind: "question"` instead of `"fix"`, sharing `group` with its
     sibling so `accept_patch` can retire it without recording a signal."""
@@ -131,7 +136,7 @@ def save_question_patch(patch: GhostPatch, root: Path, group: str, label: str) -
         json.dumps(
             {
                 "digest": digest,
-                "fingerprint": fingerprint_for_patch(patch),
+                "fingerprint": fingerprint_for_patch(patch, failure_class),
                 "summary": patch.evidence.summary,
                 "files": files,
                 "kind": "question",
@@ -250,6 +255,11 @@ def run_checks_and_maybe_escalate(
     if not failing:
         return PipelineOutcome(check_results=results, failing_checks=failing)
 
+    classification = classify_failure(changeset, failing, worktree.path, config.project_root)
+    failure_class = (
+        classification.failure_class.value if classification.failure_class else None
+    )
+
     try:
         provider = create_provider(config.provider)
     except ValueError as exc:
@@ -271,6 +281,19 @@ def run_checks_and_maybe_escalate(
     if escalation is None:
         return PipelineOutcome(
             check_results=results, failing_checks=failing, provider_name=provider.name
+        )
+
+    # Issue #38: a test that was already failing at HEAD isn't a regression
+    # of this edit at all — the provider has already been consulted above
+    # (so a bad/erroring provider is still reported the same way it always
+    # was), but nothing gets built or saved for it.
+    if classification.failure_class is FailureClass.PRE_EXISTING:
+        return PipelineOutcome(
+            check_results=results,
+            failing_checks=failing,
+            provider_name=provider.name,
+            regression_test=escalation.regression_test,
+            proposed_fix=escalation.proposed_fix,
         )
 
     # Issue #37: a fix that puts back the user's own edit, for a non-crash
@@ -301,8 +324,27 @@ def run_checks_and_maybe_escalate(
             ghost_patch_error=str(exc),
         )
 
+    # Issue #38: when the user edited the failing test file itself, that
+    # test is the new spec — a patch is never saved if it also touches a
+    # test file the user edited, no matter how cleanly it verified.
+    excluded_test_files = set(classification.edited_test_files)
+    if excluded_test_files and excluded_test_files & diff_touched_files(patch.diff):
+        return PipelineOutcome(
+            check_results=results,
+            failing_checks=failing,
+            provider_name=provider.name,
+            regression_test=escalation.regression_test,
+            proposed_fix=escalation.proposed_fix,
+            ghost_patch_error=(
+                "proposed fix touches a test file you edited — refusing to save it; "
+                "the edited test is the new spec and must not be patched"
+            ),
+        )
+
     if update_test_patch is not None:
-        question = _save_question(changeset, config.project_root, patch, update_test_patch)
+        question = _save_question(
+            changeset, config.project_root, patch, update_test_patch, failure_class
+        )
         return PipelineOutcome(
             check_results=results,
             failing_checks=failing,
@@ -312,13 +354,15 @@ def run_checks_and_maybe_escalate(
             question=question,
         )
 
-    patch_path, retired = save_ghost_patch(patch, config.project_root)
+    patch_path, retired = save_ghost_patch(patch, config.project_root, failure_class)
     interruption_policy = InterruptionPolicy(
         signal_store(config.project_root),
         threshold=config.interruption_threshold,
         min_signals=config.interruption_min_signals,
     )
-    decision = interruption_policy.evaluate(patch)
+    decision = interruption_policy.evaluate_fingerprint(
+        fingerprint_for_patch(patch, failure_class)
+    )
 
     return PipelineOutcome(
         check_results=results,
@@ -334,13 +378,19 @@ def run_checks_and_maybe_escalate(
 
 
 def _save_question(
-    changeset: ChangeSet, root: Path, keep_old_behavior: GhostPatch, update_test: GhostPatch
+    changeset: ChangeSet,
+    root: Path,
+    keep_old_behavior: GhostPatch,
+    update_test: GhostPatch,
+    failure_class: str | None = None,
 ) -> GhostQuestion:
     group = hashlib.sha1(
         (keep_old_behavior.diff + update_test.diff).encode("utf-8")
     ).hexdigest()[:10]
-    keep_path = save_question_patch(keep_old_behavior, root, group, "keep old behaviour")
-    update_path = save_question_patch(update_test, root, group, "update the test")
+    keep_path = save_question_patch(
+        keep_old_behavior, root, group, "keep old behaviour", failure_class
+    )
+    update_path = save_question_patch(update_test, root, group, "update the test", failure_class)
 
     changed_name = changeset.paths[0].stem if changeset.paths else "the module"
     test_files = _patch_target_files(update_test, root)

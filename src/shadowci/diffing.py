@@ -8,6 +8,21 @@ what "this fix puts back the user's own edit" means.
 from __future__ import annotations
 
 
+def diff_touched_files(diff_text: str) -> set[str]:
+    """The `b/<path>` targets a unified diff's `+++` headers name — the
+    files it would actually write to if applied, as opposed to whatever
+    files happened to trigger the check run that produced it."""
+    files: set[str] = set()
+    for line in diff_text.splitlines():
+        if not line.startswith("+++ "):
+            continue
+        target = line[len("+++ ") :].strip()
+        if target == "/dev/null":
+            continue
+        files.add(target.removeprefix("b/"))
+    return files
+
+
 def diff_added_and_removed_lines(diff_text: str) -> tuple[set[str], set[str]]:
     """The content lines a unified diff adds and removes, headers excluded."""
     added: set[str] = set()

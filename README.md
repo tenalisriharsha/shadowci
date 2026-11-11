@@ -34,9 +34,14 @@ spelled out.
 
 Every verified patch also feeds an interruption policy: `apply-ghost`,
 `reject-ghost`, and `ignore-ghost` each record what you actually did with a
-fix, grouped by the kind of check that originally failed. With no history
-for that kind of fix yet, ShadowCI stays quiet by default — it only
-flags a patch as worth surfacing once enough accepted fixes of that kind
+fix, grouped by the kind of check that originally failed *and* how the
+failure was classified (issue #38) — whether the edited code is what the
+failing test covers, whether that test passed at `HEAD`, or whether the
+user edited the test itself — so a rejected "this looked like a revert"
+patch never drags down the score of an unrelated, unambiguous fix just
+because the same check happened to fail. With no history for that kind of
+fix yet, ShadowCI stays quiet by default — it only flags a patch as worth
+surfacing once enough accepted fixes of that kind
 show it's wanted. `shadowci signals` shows the running tally and the
 policy's current verdict for each kind of fix.
 
@@ -197,8 +202,10 @@ in one place, with no pending patches yet.
 
 **A ghost patch surfaces on the dashboard** — a real bug lands, the
 targeted test fails, the scripted provider's fix verifies, and because this
-kind of fix ("pytest-targeted") already has an accepted history, the
-interruption policy marks it `verdict=surface` instead of staying silent.
+kind of fix (`unclear-behavior-change:pytest-targeted` — the edited code is
+what the failing test covers, and it passed at `HEAD`; see issue #38)
+already has an accepted history, the interruption policy marks it
+`verdict=surface` instead of staying silent.
 
 ![shadowci radar with a ghost patch surfaced](docs/screenshots/15-radar-pending-patch.png)
 
@@ -325,11 +332,21 @@ ShadowCI's planned feature set is complete and fully tested (190 tests):
   of a silent fix whenever a matching test rewrite can also be verified;
   `apply-ghost <digest>` applies the chosen option and retires its sibling
   with no signal recorded for it.
+- Failure classification (issue #38): before escalating, ShadowCI sorts a
+  failure into `regression-elsewhere` (edited code the failing test
+  doesn't cover, which passed at `HEAD`), `test-edited` (the user edited
+  the failing test itself — the test is the new spec, and a patch may
+  never touch it), `unclear-behavior-change` (edited code the test does
+  cover, which passed at `HEAD`), or `pre-existing` (the test already
+  failed at `HEAD`, so this edit never gets escalated as its cause, and no
+  patch is produced).
 - Interruption policy: `apply-ghost` / `reject-ghost` / `ignore-ghost`
   record accept/reject/ignore signals grouped by the kind of check that
-  originally failed; a deterministic, silent-by-default scoring model
-  decides whether a future fix of that kind is worth surfacing, and
-  `shadowci signals` reports the running tally and verdict.
+  originally failed *and* its classification above; a deterministic,
+  silent-by-default scoring model decides whether a future fix of that
+  kind is worth surfacing, and `shadowci signals` reports the running
+  tally and verdict per class — a signals file from before issue #38
+  (plain, unprefixed fingerprints) keeps loading alongside new ones.
 - `shadowci radar`: a terminal dashboard over the same pipeline, showing
   watched files, live check status, and pending ghost patches with their
   interruption-policy verdict; `a`/`r`/`i` keybindings accept/reject/ignore
