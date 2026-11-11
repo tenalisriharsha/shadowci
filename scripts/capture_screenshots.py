@@ -319,7 +319,53 @@ def main() -> None:
             browser,
         )
 
-        # 7. apply-ghost — the one-keystroke apply of a verified ghost patch
+        # 7. ghosts — list saved patches, ready vs stale, without hunting
+        # for a hex filename by hand
+        ghosts_repo = Path(tempfile.gettempdir()) / "shadowci-ghosts-repo"
+        shutil.rmtree(ghosts_repo, ignore_errors=True)
+        ghosts_repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=ghosts_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Demo User"], cwd=ghosts_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "demo@example.com"], cwd=ghosts_repo, check=True)
+        (ghosts_repo / "calculator.py").write_text(
+            "def add(a, b):\n    return a + b + 1\n\n\ndef subtract(a, b):\n    return a - b\n"
+        )
+        subprocess.run(["git", "add", "calculator.py"], cwd=ghosts_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit"], cwd=ghosts_repo, check=True)
+
+        ghost_dir = ghosts_repo / ".shadowci" / "ghost"
+        ghost_dir.mkdir(parents=True)
+        (ghost_dir / "readyaa001.patch").write_text(
+            "--- a/calculator.py\n+++ b/calculator.py\n@@ -1,3 +1,3 @@\n"
+            " def add(a, b):\n-    return a + b + 1\n+    return a + b\n \n"
+        )
+        (ghost_dir / "readyaa001.json").write_text(
+            '{"digest": "readyaa001", "fingerprint": "pytest-targeted", '
+            '"summary": "fix the off-by-one in add", "files": ["calculator.py"]}'
+        )
+        (ghost_dir / "staleaa002.patch").write_text(
+            "--- a/calculator.py\n+++ b/calculator.py\n@@ -1,2 +1,2 @@\n"
+            " def add(a, b):\n-    return a + b + 999\n+    return a + b\n"
+        )
+        (ghost_dir / "staleaa002.json").write_text(
+            '{"digest": "staleaa002", "fingerprint": "pytest-targeted", '
+            '"summary": "a stale fix from an earlier run", "files": ["calculator.py"]}'
+        )
+        cmd = [PYTHON, "-m", "shadowci", "ghosts", "."]
+        result = run(cmd, cwd=ghosts_repo)
+        shot(
+            render(
+                label(ghosts_repo),
+                "shadowci ghosts .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci ghosts — ready vs stale saved patches",
+            ),
+            OUT_DIR / "07-ghosts.png",
+            browser,
+        )
+        shutil.rmtree(ghosts_repo, ignore_errors=True)
+
+        # 8. apply-ghost — the one-keystroke apply of a verified ghost patch
         patch_repo = Path(tempfile.gettempdir()) / "shadowci-patch-repo"
         shutil.rmtree(patch_repo, ignore_errors=True)
         patch_repo.mkdir(parents=True)

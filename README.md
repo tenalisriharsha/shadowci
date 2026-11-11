@@ -23,6 +23,15 @@ verified does it save a "ghost patch": a diff you can apply to your real
 files in one command, `shadowci apply-ghost`, which rebases cleanly onto
 whatever you've edited in the meantime instead of clobbering it.
 
+`shadowci ghosts` lists every saved ghost patch — its short name, summary,
+the files it touches, and whether it's still `ready` to apply or has gone
+`stale` because the live tree moved on — so you never have to go hunting
+for a patch's hex filename in scrollback or a file explorer. `ghosts
+--clean` discards the stale ones without recording any signal, and
+`apply-ghost`, `reject-ghost`, and `ignore-ghost` each take a `--latest`
+flag that acts on the newest ready patch instead of needing the filename
+spelled out.
+
 Every verified patch also feeds an interruption policy: `apply-ghost`,
 `reject-ghost`, and `ignore-ghost` each record what you actually did with a
 fix, grouped by the kind of check that originally failed. With no history
@@ -56,10 +65,13 @@ shadowci status               # inspect current configuration
 shadowci watch                 # watch for changes, sync them, run checks, escalate on failure
 shadowci watch --skip-checks    # just watch and sync, skip the check/escalation step
 shadowci radar                   # the same pipeline as a live terminal dashboard
-shadowci apply-ghost <patch>       # apply a verified ghost patch to the live tree (records "accept")
-shadowci reject-ghost <patch>       # discard a saved patch (records "reject")
-shadowci ignore-ghost <patch>        # leave a saved patch unapplied (records "ignore")
-shadowci signals                      # show recorded signal history and current policy scores
+shadowci ghosts                    # list saved ghost patches and whether they're ready or stale
+shadowci ghosts --clean             # remove stale ghost patches, no signal recorded
+shadowci apply-ghost <patch>          # apply a verified ghost patch to the live tree (records "accept")
+shadowci apply-ghost --latest          # apply the newest ready patch without naming it
+shadowci reject-ghost <patch>           # discard a saved patch (records "reject")
+shadowci ignore-ghost <patch>             # leave a saved patch unapplied (records "ignore")
+shadowci signals                           # show recorded signal history and current policy scores
 shadowci evaluate                      # replay the built-in scenario suite and report metrics
 ```
 
@@ -102,6 +114,12 @@ applying it to your real files is one command — and it rebases onto
 whatever you've edited in the meantime instead of clobbering it.
 
 ![shadowci apply-ghost applying a verified patch](docs/screenshots/08-apply-ghost.png)
+
+**`shadowci ghosts`** — lists every saved patch with its summary, the files
+it touches, and whether it's still `ready` or has gone `stale`, so there's
+never a need to go hunting for a patch's hex filename by hand.
+
+![shadowci ghosts listing saved patches](docs/screenshots/07-ghosts.png)
 
 **`shadowci apply-ghost` records an accept signal** — applying a patch is
 itself positive feedback: the interruption policy remembers it against the
