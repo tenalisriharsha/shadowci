@@ -294,6 +294,73 @@ def intentional_behavior_change_scenario() -> Scenario:
     )
 
 
+def garbage_code_scenario() -> Scenario:
+    """A save leaves a stray debug line with a misspelled name in `calc.py`,
+    crashing the module at import with a `NameError`.
+
+    The correct fix simply restores the committed lines — which looks,
+    diff-wise, exactly like reverting the user's last change (issue #35's
+    false positive), even though the code could not even run. This pins
+    down that a crash fix must still be a confident, auto-accepted fix, and
+    must never be counted as `reverted_user_change`.
+    """
+    return _bug_scenario(
+        name="garbage-code",
+        description="a stray debug line with a misspelled name crashes calc.py at import",
+        module_filename="calc.py",
+        test_filename="tests/test_calc.py",
+        clean_content="def add(a, b):\n    return a + b\n",
+        buggy_content="def add(a, b):\n    return a + b\ncache_result = cahce_result\n",
+        regression_test="from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        proposed_fix=(
+            "--- a/calc.py\n+++ b/calc.py\n@@ -1,3 +1,2 @@\n"
+            " def add(a, b):\n     return a + b\n-cache_result = cahce_result\n"
+        ),
+    )
+
+
+def garbage_code_import_error_scenario() -> Scenario:
+    """A save misspells an imported name in `calc.py`, crashing the module
+    at import with an `ImportError` — the same shape as
+    `garbage_code_scenario` but with a different crash type, so every kind
+    the revert check must respect is covered.
+    """
+    return _bug_scenario(
+        name="garbage-code-import-error",
+        description="a misspelled import crashes calc.py at import with an ImportError",
+        module_filename="calc.py",
+        test_filename="tests/test_calc.py",
+        clean_content=(
+            "from math import sqrt\n"
+            "\n"
+            "\n"
+            "def hypotenuse(a, b):\n"
+            "    return sqrt(a * a + b * b)\n"
+        ),
+        buggy_content=(
+            "from math import sqrtt\n"
+            "\n"
+            "\n"
+            "def hypotenuse(a, b):\n"
+            "    return sqrtt(a * a + b * b)\n"
+        ),
+        regression_test=(
+            "from calc import hypotenuse\n\n\n"
+            "def test_hypotenuse():\n    assert hypotenuse(3, 4) == 5\n"
+        ),
+        proposed_fix=(
+            "--- a/calc.py\n+++ b/calc.py\n@@ -1,5 +1,5 @@\n"
+            "-from math import sqrtt\n"
+            "+from math import sqrt\n"
+            " \n"
+            " \n"
+            " def hypotenuse(a, b):\n"
+            "-    return sqrtt(a * a + b * b)\n"
+            "+    return sqrt(a * a + b * b)\n"
+        ),
+    )
+
+
 def built_in_scenarios() -> tuple[Scenario, ...]:
     """The default scenario suite the `evaluate` CLI command replays."""
     return (
@@ -302,4 +369,6 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
         inverted_condition_scenario(),
         clean_rename_scenario(),
         clean_comment_scenario(),
+        garbage_code_scenario(),
+        garbage_code_import_error_scenario(),
     )

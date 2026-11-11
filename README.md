@@ -55,7 +55,13 @@ That last metric counts a saved, verified fix whose diff would put back
 lines the user had deliberately changed — the case where a confidently
 "verified" fix is still the wrong call because the edit broke an old test
 on purpose, exercised by the (not built-in) `intentional-behavior-change`
-scenario in `shadowci.evaluation.scenarios`.
+scenario in `shadowci.evaluation.scenarios`. The built-in suite also
+includes `garbage-code` and `garbage-code-import-error`: edits that leave
+`calc.py` unable to even import (a `NameError`/`ImportError`, not a logic
+bug), whose correct fix happens to restore the exact lines the user's edit
+changed. They pin down the opposite case — that restoring HEAD's lines is
+sometimes simply the right fix for a crash, so `reverted_user_change` must
+never flag it.
 
 `shadowci doctor` checks whether ShadowCI can actually work in the current
 project — is it a git repository, can `shadowci.toml` be read, does the
