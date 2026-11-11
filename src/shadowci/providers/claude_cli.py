@@ -20,6 +20,33 @@ class ClaudeCLIProviderError(RuntimeError):
     """Raised when the headless `claude -p` invocation fails or is unavailable."""
 
 
+_MAX_OUTPUT_LINES = 5
+
+
+def _combine_output(stdout: str, stderr: str) -> str:
+    """Join stdout/stderr into one trimmed blurb, since `claude -p` prints its
+    own failure messages (expired login, usage limit) on stdout and leaves
+    stderr empty."""
+    parts = [part.strip() for part in (stdout, stderr) if part.strip()]
+    lines = "\n".join(parts).splitlines()
+    if len(lines) > _MAX_OUTPUT_LINES:
+        lines = lines[:_MAX_OUTPUT_LINES] + ["... (truncated)"]
+    return "\n".join(lines)
+
+
+def _try_hint(output: str) -> str | None:
+    """Return a `Try:` hint for failure text recognised by its wording."""
+    lowered = output.lower()
+    if "usage limit" in lowered:
+        return (
+            'Try: wait for the reset time in the message above, or set '
+            'provider = "scripted".'
+        )
+    if "authenticate" in lowered or "oauth" in lowered or "login" in lowered:
+        return "Try: run `claude`, then `/login`."
+    return None
+
+
 class ClaudeCLIProvider(LLMProvider):
     """Calls `claude -p` headlessly for test/fix generation."""
 
@@ -48,14 +75,22 @@ class ClaudeCLIProvider(LLMProvider):
                 timeout=self._timeout_seconds,
             )
         except FileNotFoundError as exc:
-            raise ClaudeCLIProviderError(f"'{self._binary}' not found on PATH") from exc
+            raise ClaudeCLIProviderError(
+                f"'{self._binary}' not found on PATH\n"
+                "Try: install Claude Code, or make sure the `claude` "
+                "command is on your PATH."
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise ClaudeCLIProviderError(
                 f"'{self._binary} -p' timed out after {self._timeout_seconds}s"
             ) from exc
 
         if result.returncode != 0:
-            raise ClaudeCLIProviderError(
-                f"'{self._binary} -p' exited {result.returncode}: {result.stderr.strip()}"
-            )
+            output = _combine_output(result.stdout, result.stderr)
+            message = f"'{self._binary} -p' exited {result.returncode}"
+            message += f": {output}" if output else " with no output"
+            hint = _try_hint(output)
+            if hint:
+                message += f"\n{hint}"
+            raise ClaudeCLIProviderError(message)
         return strip_code_fence(result.stdout.strip())
