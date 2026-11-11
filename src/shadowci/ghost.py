@@ -33,6 +33,7 @@ from shadowci.events import ChangeSet, CheckResult, EvidenceCard, GhostPatch
 from shadowci.shadow_worktree import ShadowWorktree
 
 GHOST_TESTS_SUBDIR = "tests"
+GHOST_TEST_FILENAME_PREFIX = "test_shadowci_ghost_"
 
 
 class GhostPatchError(RuntimeError):
@@ -42,7 +43,7 @@ class GhostPatchError(RuntimeError):
 def _ghost_test_filename(changeset: ChangeSet, regression_test: str) -> str:
     paths = "|".join(sorted(str(path) for path in changeset.paths))
     digest = hashlib.sha1(f"{paths}|{regression_test}".encode()).hexdigest()[:10]
-    return f"test_shadowci_ghost_{digest}.py"
+    return f"{GHOST_TEST_FILENAME_PREFIX}{digest}.py"
 
 
 def _run_git_apply(diff: str, cwd: Path, check_only: bool) -> subprocess.CompletedProcess:

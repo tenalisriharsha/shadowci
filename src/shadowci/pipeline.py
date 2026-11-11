@@ -11,17 +11,25 @@ instead of each growing their own copy.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from shadowci.checks.base import clear_bytecode_cache
+from shadowci.checks.lint_runner import RuffRunner
+from shadowci.checks.pytest_runner import PytestRunner
 from shadowci.checks.suite import build_check_runners, run_checks
+from shadowci.checks.targeted import find_targeted_tests
+from shadowci.checks.type_checker import MypyRunner
 from shadowci.config import ShadowCIConfig
 from shadowci.escalation import EscalationPolicy
-from shadowci.events import ChangeSet, CheckResult, GhostPatch, Signal
+from shadowci.events import ChangeSet, CheckResult, EvidenceCard, GhostPatch, Signal
 from shadowci.ghost import (
+    GHOST_TEST_FILENAME_PREFIX,
     GhostPatchBuilder,
     GhostPatchError,
     apply_to_live_tree,
@@ -29,8 +37,10 @@ from shadowci.ghost import (
 )
 from shadowci.interruption import InterruptionDecision, InterruptionPolicy, fingerprint_for_patch
 from shadowci.providers.base import LLMProvider
+from shadowci.revert_check import fix_reverts_a_pure_addition, is_crash_failure
 from shadowci.shadow_worktree import ShadowWorktree
 from shadowci.signals import SignalStore
+from shadowci.test_expectation import TestExpectationError, build_updated_test_source
 
 GHOST_PATCH_DIRNAME = ".shadowci/ghost"
 SIGNALS_FILENAME = ".shadowci/signals.json"
@@ -94,23 +104,43 @@ def _retire_superseded_patches(
     return tuple(retired)
 
 
-def save_ghost_patch(patch: GhostPatch, root: Path) -> tuple[Path, tuple[str, ...]]:
+def save_ghost_patch(
+    patch: GhostPatch,
+    root: Path,
+    *,
+    kind: str = "fix",
+    group: str | None = None,
+    files: list[str] | None = None,
+) -> tuple[Path, tuple[str, ...]]:
+    """Save a verified `GhostPatch` to disk.
+
+    `kind` is "fix" for a normal, single auto-saved patch, or "question"
+    for one of two mutually exclusive options saved when a fix would
+    revert the user's own intentional change (issue #37) — `group` then
+    ties the pair together. Old patch files saved before these fields
+    existed have neither key and still load and apply as `kind: "fix"`.
+
+    `files` overrides the target-files list that's normally derived from
+    `patch.changeset` — needed for the "update the test" question option,
+    whose own target (the test file) isn't the changeset that triggered
+    it (the source file the user edited), so the two options don't look
+    like competing patches for the same file and retire one another.
+    """
     digest = hashlib.sha1(patch.diff.encode("utf-8")).hexdigest()[:10]
     ghost_dir = ghost_patch_dir(root)
     patch_path = ghost_dir / f"{digest}.patch"
-    files = _patch_target_files(patch, root)
+    files = files if files is not None else _patch_target_files(patch, root)
     patch_path.write_text(patch.diff)
-    metadata_path(patch_path).write_text(
-        json.dumps(
-            {
-                "digest": digest,
-                "fingerprint": fingerprint_for_patch(patch),
-                "summary": patch.evidence.summary,
-                "files": files,
-            },
-            indent=2,
-        )
-    )
+    metadata = {
+        "digest": digest,
+        "fingerprint": fingerprint_for_patch(patch),
+        "summary": patch.evidence.summary,
+        "files": files,
+        "kind": kind,
+    }
+    if group is not None:
+        metadata["group"] = group
+    metadata_path(patch_path).write_text(json.dumps(metadata, indent=2))
     retired = _retire_superseded_patches(ghost_dir, patch_path, files)
     return patch_path, retired
 
@@ -172,6 +202,130 @@ def clean_ghost_patches(root: Path) -> tuple[str, ...]:
     return tuple(removed)
 
 
+def _git_diff_head(worktree_path: Path) -> str:
+    """The user's own edit, as seen in the shadow worktree, before any
+    proposed fix is applied there — issue #37's revert check compares a
+    fix against exactly this, captured up front."""
+    result = subprocess.run(
+        ["git", "diff", "HEAD"], cwd=worktree_path, capture_output=True, text=True
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
+def _modify_file_diff(relative_path: Path, old_content: str, new_content: str) -> str:
+    """A git-apply-compatible unified diff that rewrites an existing file."""
+    rel = relative_path.as_posix()
+    diff = "".join(
+        difflib.unified_diff(
+            old_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
+        )
+    )
+    if diff and not diff.endswith("\n"):
+        diff += "\n"
+    return diff
+
+
+def _build_update_test_option(
+    worktree: ShadowWorktree,
+    changeset: ChangeSet,
+    failing_checks: tuple[CheckResult, ...],
+) -> tuple[GhostPatch, str] | None:
+    """Try to build the "update the test" option: rewrite the real failing
+    test's expectation to match the user's new behavior, verified for real
+    in the shadow worktree. Returns the patch plus its target file's
+    worktree-relative path (used instead of `changeset` to compute which
+    *file* this option targets — it's the test file, not what the
+    changeset edited), or None when the test isn't a shape this can
+    rewrite deterministically, or the rewrite doesn't make the full suite
+    pass — the caller falls back to an ordinary verified fix then.
+    """
+    targets = [
+        path
+        for path in find_targeted_tests(changeset, worktree.path, "tests")
+        if not path.name.startswith(GHOST_TEST_FILENAME_PREFIX)
+    ]
+    if len(targets) != 1:
+        return None
+    test_path = targets[0]
+    test_relative = test_path.relative_to(worktree.path)
+    original_source = test_path.read_text()
+
+    try:
+        updated_source = build_updated_test_source(original_source, worktree.path)
+    except TestExpectationError:
+        return None
+
+    # the "keep old behaviour" option (verified just before this one is
+    # attempted) left its own ghost regression test behind — it still
+    # expects the *old* behavior, so it must not be in the way while this
+    # option confirms the suite passes with the behavior kept as-is.
+    for ghost_test in worktree.path.rglob(f"{GHOST_TEST_FILENAME_PREFIX}*.py"):
+        ghost_test.unlink()
+
+    test_path.write_text(updated_source)
+    clear_bytecode_cache(worktree.path)
+    try:
+        confirmation = run_checks(
+            [PytestRunner(), MypyRunner(), RuffRunner()], worktree.path
+        )
+    finally:
+        test_path.write_text(original_source)
+
+    if any(not result.passed for result in confirmation):
+        return None
+
+    diff = _modify_file_diff(test_relative, original_source, updated_source)
+    evidence = EvidenceCard(
+        summary=f"update {test_relative.as_posix()} to match the new behavior",
+        failing_test_before=original_source,
+        check_results=confirmation,
+        originally_failed_checks=tuple(result.name for result in failing_checks),
+    )
+    patch = GhostPatch(diff=diff, evidence=evidence, changeset=changeset)
+    return patch, test_relative.as_posix()
+
+
+def _retire_question_sibling(root: Path, metadata: dict) -> None:
+    """When one option of a question pair (issue #37) is resolved, discard
+    the other without recording a signal for it — it was never
+    independently shown to, or judged by, the user."""
+    group = metadata.get("group")
+    if metadata.get("kind") != "question" or group is None:
+        return
+    for sibling_path in ghost_patch_dir(root).glob("*.patch"):
+        if sibling_path.stem == metadata.get("digest"):
+            continue
+        sibling_metadata = load_patch_metadata(sibling_path)
+        if sibling_metadata is None or sibling_metadata.get("group") != group:
+            continue
+        metadata_path(sibling_path).unlink(missing_ok=True)
+        sibling_path.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class QuestionOption:
+    """One verified, mutually exclusive option offered when a fix would
+    revert the user's own intentional change (issue #37)."""
+
+    label: str
+    patch: GhostPatch
+    patch_path: Path
+    digest: str
+
+
+@dataclass(frozen=True)
+class QuestionOutcome:
+    """Two verified options saved instead of a single auto-accepted fix,
+    because the "natural" fix would have put back the user's own edit."""
+
+    group: str
+    keep_old_behaviour: QuestionOption
+    update_the_test: QuestionOption
+
+
 @dataclass(frozen=True)
 class PipelineOutcome:
     """What one run of checks (+ maybe escalation) against a change set produced."""
@@ -188,6 +342,7 @@ class PipelineOutcome:
     ghost_patch_error: str | None = None
     retired_ghost_patches: tuple[str, ...] = ()
     decision: InterruptionDecision | None = None
+    question: QuestionOutcome | None = None
 
 
 def run_checks_and_maybe_escalate(
@@ -232,6 +387,13 @@ def run_checks_and_maybe_escalate(
             check_results=results, failing_checks=failing, provider_name=provider.name
         )
 
+    # issue #37: known ahead of any fix — the user's own edit, exactly as
+    # it sits in the shadow worktree right now, before anything is reverted.
+    user_diff = _git_diff_head(worktree.path)
+    ask_candidate = not is_crash_failure(failing) and fix_reverts_a_pure_addition(
+        user_diff, escalation.proposed_fix
+    )
+
     try:
         builder = GhostPatchBuilder(worktree)
         patch = builder.build(
@@ -250,7 +412,50 @@ def run_checks_and_maybe_escalate(
             ghost_patch_error=str(exc),
         )
 
-    patch_path, retired = save_ghost_patch(patch, config.project_root)
+    update_test_option = None
+    if ask_candidate:
+        # the revert fix just verified above left the shadow worktree with
+        # the change reverted — put the user's actual edit back before
+        # trying to derive its real behavior for the second option.
+        worktree.sync(list(changeset.events))
+        clear_bytecode_cache(worktree.path)
+        update_test_option = _build_update_test_option(worktree, changeset, failing)
+
+    if ask_candidate and update_test_option is not None:
+        update_test_patch, update_test_relative = update_test_option
+        group = hashlib.sha1(
+            (patch.diff + "\x00" + update_test_patch.diff).encode("utf-8")
+        ).hexdigest()[:10]
+        keep_path, keep_retired = save_ghost_patch(
+            patch, config.project_root, kind="question", group=group
+        )
+        update_path, update_retired = save_ghost_patch(
+            update_test_patch,
+            config.project_root,
+            kind="question",
+            group=group,
+            files=[update_test_relative],
+        )
+        question = QuestionOutcome(
+            group=group,
+            keep_old_behaviour=QuestionOption(
+                "keep old behaviour", patch, keep_path, keep_path.stem
+            ),
+            update_the_test=QuestionOption(
+                "update the test", update_test_patch, update_path, update_path.stem
+            ),
+        )
+        return PipelineOutcome(
+            check_results=results,
+            failing_checks=failing,
+            provider_name=provider.name,
+            regression_test=escalation.regression_test,
+            proposed_fix=escalation.proposed_fix,
+            retired_ghost_patches=keep_retired + update_retired,
+            question=question,
+        )
+
+    patch_path, retired = save_ghost_patch(patch, config.project_root, kind="fix")
     interruption_policy = InterruptionPolicy(
         signal_store(config.project_root),
         threshold=config.interruption_threshold,
@@ -298,6 +503,7 @@ def accept_patch(root: Path, patch_file: Path) -> ActionResult:
         signal_store(root).record(metadata["fingerprint"], Signal.ACCEPT, metadata["digest"])
         fingerprint = metadata["fingerprint"]
         lines.append(f"recorded signal: accept (fingerprint={fingerprint!r})")
+        _retire_question_sibling(root, metadata)
         metadata_path(patch_file).unlink(missing_ok=True)
 
     patch_file.unlink(missing_ok=True)
