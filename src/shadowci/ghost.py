@@ -39,10 +39,9 @@ class GhostPatchError(RuntimeError):
     """Raised when a ghost patch cannot be verified or applied."""
 
 
-def _ghost_test_filename(changeset: ChangeSet) -> str:
-    digest = hashlib.sha1(
-        "|".join(sorted(str(path) for path in changeset.paths)).encode("utf-8")
-    ).hexdigest()[:10]
+def _ghost_test_filename(changeset: ChangeSet, regression_test: str) -> str:
+    paths = "|".join(sorted(str(path) for path in changeset.paths))
+    digest = hashlib.sha1(f"{paths}|{regression_test}".encode()).hexdigest()[:10]
     return f"test_shadowci_ghost_{digest}.py"
 
 
@@ -93,7 +92,7 @@ class GhostPatchBuilder:
         proposed_fix: str,
     ) -> GhostPatch:
         shadow_path = self._worktree.path
-        test_relative = Path(self._tests_dir) / _ghost_test_filename(changeset)
+        test_relative = Path(self._tests_dir) / _ghost_test_filename(changeset, regression_test)
         test_path = shadow_path / test_relative
 
         test_path.parent.mkdir(parents=True, exist_ok=True)
