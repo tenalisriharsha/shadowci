@@ -7,7 +7,10 @@ that gap with a small, fully deterministic scoring model:
 
 - patches are grouped by `fingerprint_for_patch`, built from the checks
   that originally failed (a failing targeted test and a lint failure are
-  different "kinds" of fix, and the user may feel differently about each);
+  different "kinds" of fix, and the user may feel differently about each)
+  plus, since issue #38, the failure's classification (a patch that
+  reverts a user's own edit and a patch that fixes a genuine regression
+  elsewhere no longer share history just because the same check failed);
 - with no recorded history for a fingerprint — or too little of it — the
   policy stays silent. That's the bias: never interrupt on a kind of fix
   it hasn't seen enough signal about yet;
@@ -29,10 +32,21 @@ DEFAULT_THRESHOLD = 0.34
 DEFAULT_MIN_SIGNALS = 2
 
 
-def fingerprint_for_patch(patch: GhostPatch) -> str:
-    """A stable key for "this kind of fix", used to look up signal history."""
+def fingerprint_for_patch(patch: GhostPatch, failure_class: str | None = None) -> str:
+    """A stable key for "this kind of fix", used to look up signal history.
+
+    `failure_class` (issue #38's `regression-elsewhere` / `test-edited` /
+    `unclear-behavior-change` / `pre-existing`) is prefixed on when known,
+    so two failures that happen to trip the same check but were classified
+    differently never share one fingerprint. Left `None` — the only way a
+    fingerprint was ever built before issue #38, and still how it's built
+    when nothing could be classified — it falls back to the plain,
+    unprefixed form, so a signals file written by an earlier version keeps
+    loading as a legacy fingerprint alongside any new, prefixed ones.
+    """
     checks = sorted(patch.evidence.originally_failed_checks)
-    return ",".join(checks) if checks else "(no-checks)"
+    base = ",".join(checks) if checks else "(no-checks)"
+    return f"{failure_class}:{base}" if failure_class else base
 
 
 @dataclass(frozen=True)

@@ -82,7 +82,7 @@ def diff_head(worktree_path: Path) -> str:
     return result.stdout
 
 
-def _failing_tests_by_file(failing_checks: tuple[CheckResult, ...]) -> dict[str, set[str]]:
+def failing_tests_by_file(failing_checks: tuple[CheckResult, ...]) -> dict[str, set[str]]:
     """`{test_relpath: {test_function_name, ...}}` for every pytest node id
     pytest reported as FAILED (a collection-wide ERROR has no `::name` and
     is skipped — crash failures are handled separately)."""
@@ -216,7 +216,7 @@ def build_update_test_patch(
     as it was found either way: the edited test file(s) are restored
     before returning.
     """
-    by_file = _failing_tests_by_file(originally_failing)
+    by_file = failing_tests_by_file(originally_failing)
     if not by_file:
         return None
 
