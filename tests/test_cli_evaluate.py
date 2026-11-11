@@ -26,7 +26,9 @@ def test_evaluate_save_dir_writes_scenario_json_without_running(tmp_path: Path, 
 
     assert exit_code == 0
     written = sorted(save_dir.glob("*.json"))
-    assert len(written) == 5
+    # Issue #36 adds two crash-type scenarios (garbage-code,
+    # garbage-code-import-error) to the built-in suite, growing it from 5 to 7.
+    assert len(written) == 7
     assert "wrote" in out
 
     data = json.loads(written[0].read_text())
@@ -46,6 +48,23 @@ def test_evaluate_replays_a_single_saved_scenario(tmp_path: Path, capsys):
     assert exit_code == 0
     assert "off-by-one-operator [bug]: DETECTED" in out
     assert "scenarios run           : 1" in out
+
+
+def test_evaluate_reports_the_garbage_code_scenarios_as_detected(capsys):
+    # Issue #36: a crash-type scenario (broken code, not a logic bug) must
+    # still show up in the default `evaluate` run and be detected, so it is
+    # part of the regression guard issue #37's revert check must not break.
+    from shadowci.evaluation.scenarios import (
+        garbage_code_import_error_scenario,
+        garbage_code_scenario,
+    )
+
+    exit_code = main(["evaluate"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert f"{garbage_code_scenario().session.name} [bug]: DETECTED" in out
+    assert f"{garbage_code_import_error_scenario().session.name} [bug]: DETECTED" in out
 
 
 def test_evaluate_repeat_reports_policy_convergence(capsys):
