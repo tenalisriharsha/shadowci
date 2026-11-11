@@ -32,6 +32,7 @@ from shadowci import pipeline
 from shadowci.changeset import ChangeSetDetector
 from shadowci.checks.base import clear_bytecode_cache
 from shadowci.config import ShadowCIConfig
+from shadowci.diffing import fix_reverts_user_change
 from shadowci.events import ChangeKind, FileChangeEvent
 from shadowci.evaluation.scenarios import Scenario
 from shadowci.interruption import InterruptionDecision
@@ -76,30 +77,6 @@ def _git_diff_head(cwd: Path) -> str:
         ["git", "diff", "HEAD"], cwd=cwd, check=True, capture_output=True, text=True
     )
     return result.stdout
-
-
-def _diff_added_and_removed_lines(diff_text: str) -> tuple[set[str], set[str]]:
-    """The content lines a unified diff adds and removes, headers excluded."""
-    added: set[str] = set()
-    removed: set[str] = set()
-    for line in diff_text.splitlines():
-        if line.startswith(("+++", "---")):
-            continue
-        if line.startswith("+"):
-            added.add(line[1:])
-        elif line.startswith("-"):
-            removed.add(line[1:])
-    return added, removed
-
-
-def _fix_reverts_user_change(user_diff: str, fix_diff: str) -> bool:
-    """Whether `fix_diff` puts back lines `user_diff` changed: the fix adds
-    back what the user removed, or removes what the user added (or both)."""
-    if not user_diff.strip() or not fix_diff.strip():
-        return False
-    user_added, user_removed = _diff_added_and_removed_lines(user_diff)
-    fix_added, fix_removed = _diff_added_and_removed_lines(fix_diff)
-    return bool(fix_added & user_removed) or bool(fix_removed & user_added)
 
 
 def _init_repo(root: Path, initial_files: dict[str, str]) -> None:
@@ -250,7 +227,7 @@ def run_scenario(
         reverted_user_change = scenario.expected_outcome != "fix" and any(
             changeset_outcome.outcome.ghost_patch is not None
             and changeset_outcome.outcome.proposed_fix is not None
-            and _fix_reverts_user_change(
+            and fix_reverts_user_change(
                 changeset_outcome.user_diff, changeset_outcome.outcome.proposed_fix
             )
             for changeset_outcome in changesets

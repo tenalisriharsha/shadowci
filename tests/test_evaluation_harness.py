@@ -92,12 +92,23 @@ def test_run_suite_never_reverts_a_user_change_for_the_built_in_scenarios():
     assert report.reverted_user_change == 0
 
 
-def test_run_suite_flags_the_intentional_change_scenario_as_a_reverted_user_change():
-    # The scripted provider's "natural" fix undoes the user's on-purpose
-    # behavior change — exactly the false positive issue #35 measures.
-    report = run_suite((intentional_behavior_change_scenario(),))
+def test_run_suite_no_longer_flags_the_intentional_change_scenario_once_it_asks():
+    # Issue #35 measured this as a reverted_user_change of 1: the scripted
+    # provider's "natural" fix undoes the user's on-purpose behavior change,
+    # and the (pre-#37) pipeline saved it as a silent "verified fix" anyway.
+    # Issue #37 makes the real pipeline ask instead of fixing whenever a fix
+    # reverts the user's own edit for a non-crash failure, so no ghost_patch
+    # is ever produced here for the harness to score as a revert — the
+    # scenario is no longer "detected" as a fix at all, it is asked about.
+    result = run_scenario(intentional_behavior_change_scenario())
 
-    assert report.reverted_user_change == 1
+    assert result.detected is False
+    assert all(
+        changeset_outcome.outcome.ghost_patch is None for changeset_outcome in result.changesets
+    )
+
+    report = run_suite((intentional_behavior_change_scenario(),))
+    assert report.reverted_user_change == 0
 
 
 def test_run_convergence_requires_a_bug_scenario_with_test_and_fix():

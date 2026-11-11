@@ -40,6 +40,24 @@ flags a patch as worth surfacing once enough accepted fixes of that kind
 show it's wanted. `shadowci signals` shows the running tally and the
 policy's current verdict for each kind of fix.
 
+Before any of that, ShadowCI checks whether the proposed fix would put
+back lines from your own uncommitted edit. The shadow worktree's `git diff
+HEAD`, taken before the fix is built, *is* that edit, so this is a
+deterministic comparison, not a model guess. When the failing check is a
+crash (a `SyntaxError`/`NameError`/`ImportError`/collection error — see
+issue #36) restoring those lines is simply correct, so nothing changes.
+Otherwise, if the fix reverts your edit *and* ShadowCI can deterministically
+rewrite the failing test to match your new behavior instead (today: a
+`pytest.raises(...)` block that no longer raises), it saves both as
+independently-verified options instead of one silent fix — `kind:
+"question"` in the patch metadata, sharing one `group` id — and a message
+like `Your change to average() broke test_average. Update the test, or
+keep the old behavior?` names both digests. `shadowci ghosts` lists the
+pair labelled `[question: ...]`; `apply-ghost <digest>` applies whichever
+one you choose and retires its sibling without recording a signal for it.
+When no such rewrite is possible (most ordinary bugs), ShadowCI falls back
+to the normal fix flow — there's no real second option to offer.
+
 `shadowci radar` puts all of that in one ambient terminal dashboard instead
 of a scrolling log: watched files, live check status, and pending ghost
 patches with their interruption-policy verdict, each handled with a single
@@ -55,13 +73,15 @@ That last metric counts a saved, verified fix whose diff would put back
 lines the user had deliberately changed — the case where a confidently
 "verified" fix is still the wrong call because the edit broke an old test
 on purpose, exercised by the (not built-in) `intentional-behavior-change`
-scenario in `shadowci.evaluation.scenarios`. The built-in suite also
-includes `garbage-code` and `garbage-code-import-error`: edits that leave
-`calc.py` unable to even import (a `NameError`/`ImportError`, not a logic
-bug), whose correct fix happens to restore the exact lines the user's edit
-changed. They pin down the opposite case — that restoring HEAD's lines is
-sometimes simply the right fix for a crash, so `reverted_user_change` must
-never flag it.
+scenario in `shadowci.evaluation.scenarios`. Now that the pipeline asks
+instead of silently fixing that case (see above), the scenario is scored
+as `ask`, not a reverted fix — `reverted_user_change` for it reads 0. The
+built-in suite also includes `garbage-code` and `garbage-code-import-error`:
+edits that leave `calc.py` unable to even import (a `NameError`/`ImportError`,
+not a logic bug), whose correct fix happens to restore the exact lines the
+user's edit changed. They pin down the opposite case — that restoring
+HEAD's lines is sometimes simply the right fix for a crash, so
+`reverted_user_change` must never flag it.
 
 `shadowci doctor` checks whether ShadowCI can actually work in the current
 project — is it a git repository, can `shadowci.toml` be read, does the
@@ -298,6 +318,13 @@ ShadowCI's planned feature set is complete and fully tested (190 tests):
   cleanly, full suite must stay green), then saved as a diff that
   `shadowci apply-ghost` applies to the live tree in one command, rebasing
   onto whatever's changed there since.
+- Revert check: before saving a fix, ShadowCI compares it against the
+  user's own uncommitted edit (the shadow worktree's `git diff HEAD`). For
+  a non-crash failure, a fix that puts that edit back is saved as a
+  two-option question (`kind: "question"`, sharing a `group` id) instead
+  of a silent fix whenever a matching test rewrite can also be verified;
+  `apply-ghost <digest>` applies the chosen option and retires its sibling
+  with no signal recorded for it.
 - Interruption policy: `apply-ghost` / `reject-ghost` / `ignore-ghost`
   record accept/reject/ignore signals grouped by the kind of check that
   originally failed; a deterministic, silent-by-default scoring model
