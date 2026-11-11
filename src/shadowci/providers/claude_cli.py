@@ -9,7 +9,9 @@ embedding an SDK dependency or an API key of its own — it rides on whatever
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
+from shadowci.classification import FailureClassification
 from shadowci.events import ChangeSet, CheckResult
 from shadowci.providers.base import LLMProvider
 from shadowci.providers.fences import strip_code_fence
@@ -55,16 +57,45 @@ class ClaudeCLIProvider(LLMProvider):
     def __init__(self, binary: str = "claude", timeout_seconds: float = 120.0) -> None:
         self._binary = binary
         self._timeout_seconds = timeout_seconds
+        self._worktree_root: Path | None = None
+        self._project_root: Path | None = None
+        self._classification: FailureClassification | None = None
+
+    def configure_prompt_context(
+        self,
+        worktree_root: Path,
+        project_root: Path,
+        classification: FailureClassification | None = None,
+    ) -> None:
+        self._worktree_root = worktree_root
+        self._project_root = project_root
+        self._classification = classification
 
     def write_regression_test(
         self, changeset: ChangeSet, check_results: tuple[CheckResult, ...]
     ) -> str:
-        return self._run(build_test_prompt(changeset, check_results))
+        return self._run(
+            build_test_prompt(
+                changeset,
+                check_results,
+                self._worktree_root,
+                self._project_root,
+                classification=self._classification,
+            )
+        )
 
     def propose_fix(
         self, changeset: ChangeSet, check_results: tuple[CheckResult, ...]
     ) -> str:
-        return self._run(build_fix_prompt(changeset, check_results))
+        return self._run(
+            build_fix_prompt(
+                changeset,
+                check_results,
+                self._worktree_root,
+                self._project_root,
+                classification=self._classification,
+            )
+        )
 
     def health_check(self, timeout_seconds: float = 30.0) -> str:
         """One trivial `claude -p` call, used by `shadowci doctor` to confirm

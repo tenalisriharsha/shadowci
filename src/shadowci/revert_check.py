@@ -82,6 +82,35 @@ def diff_head(worktree_path: Path) -> str:
     return result.stdout
 
 
+def diff_head_reversed(worktree_path: Path) -> str:
+    """The exact inverse of `diff_head`: a patch that would put the
+    worktree's uncommitted edit back to HEAD's content.
+
+    Issue #39: when a provider declines to propose a fix (an `INTENTIONAL:`
+    reply), this is the deterministic stand-in for "keep the old
+    behaviour" — there's no model-authored diff to apply, but reverting the
+    user's own edit is exactly what `git diff -R HEAD` already computes.
+    """
+    result = subprocess.run(
+        ["git", "diff", "-R", "HEAD"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+INTENTIONAL_PREFIX = "INTENTIONAL:"
+
+
+def is_intentional_reply(proposed_fix: str) -> bool:
+    """Issue #39: a provider may answer a fix request with the literal line
+    `INTENTIONAL: <reason>` instead of a diff, when it judges the failure to
+    be a deliberate behavior change rather than a bug."""
+    return proposed_fix.strip().startswith(INTENTIONAL_PREFIX)
+
+
 def failing_tests_by_file(failing_checks: tuple[CheckResult, ...]) -> dict[str, set[str]]:
     """`{test_relpath: {test_function_name, ...}}` for every pytest node id
     pytest reported as FAILED (a collection-wide ERROR has no `::name` and

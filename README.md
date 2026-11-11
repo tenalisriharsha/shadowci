@@ -63,6 +63,13 @@ one you choose and retires its sibling without recording a signal for it.
 When no such rewrite is possible (most ordinary bugs), ShadowCI falls back
 to the normal fix flow — there's no real second option to offer.
 
+To help a provider actually recognize a deliberate change instead of
+guessing from the check output alone, its prompts (issue #39) carry the
+user's diff, the current file contents, and the #38 failure class — and
+the fix prompt lets it decline with a single line, `INTENTIONAL: <reason>`,
+which routes to the same two-option question above rather than being
+rejected as an invalid patch.
+
 `shadowci radar` puts all of that in one ambient terminal dashboard instead
 of a scrolling log: watched files, live check status, and pending ghost
 patches with their interruption-policy verdict, each handled with a single
@@ -340,6 +347,20 @@ ShadowCI's planned feature set is complete and fully tested (190 tests):
   cover, which passed at `HEAD`), or `pre-existing` (the test already
   failed at `HEAD`, so this edit never gets escalated as its cause, and no
   patch is produced).
+- Richer model prompts (issue #39): the regression-test and fix prompts
+  the `claude-cli` and `local` providers send now carry the user's
+  uncommitted edit as a unified diff, the current contents of the changed
+  files and of the failing test (each capped at 20,000 characters and
+  marked `[truncated]` past that), and the #38 failure class plus which
+  test file(s) the user edited, with an explicit never-modify-them rule —
+  instead of just a list of file paths and the raw check output. A file
+  that looks sensitive (`.env*`, `*.pem`, `*.key`, or a name containing
+  `secret`, `credential`, or `token`) is never read into a prompt, even
+  when it's part of the changeset. The fix prompt also offers an escape
+  hatch for a deliberate change: a provider may reply with the single line
+  `INTENTIONAL: <reason>` instead of a diff, which ShadowCI treats exactly
+  like the #37 revert check's two-option question — "update the test" vs.
+  "keep the old behavior" — rather than failing to apply it as a patch.
 - Interruption policy: `apply-ghost` / `reject-ghost` / `ignore-ghost`
   record accept/reject/ignore signals grouped by the kind of check that
   originally failed *and* its classification above; a deterministic,

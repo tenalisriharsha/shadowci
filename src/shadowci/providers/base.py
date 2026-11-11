@@ -12,7 +12,9 @@ core pipeline so every provider is interchangeable.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
+from shadowci.classification import FailureClassification
 from shadowci.events import ChangeSet, CheckResult
 
 
@@ -34,3 +36,18 @@ class LLMProvider(ABC):
     ) -> str:
         """Return a unified diff that fixes the failure in the shadow worktree."""
         raise NotImplementedError
+
+    def configure_prompt_context(
+        self,
+        worktree_root: Path,
+        project_root: Path,
+        classification: FailureClassification | None = None,
+    ) -> None:
+        """Give a model-backed provider the shadow worktree + project root for
+        this run, and the #38 failure classification, so it can build a
+        richer prompt (issue #39): the user's diff, file contents, and which
+        test files must never be touched. `ScriptedProvider` and anything
+        else that doesn't build a prompt from `changeset` can ignore this —
+        the default here is a no-op.
+        """
+        return

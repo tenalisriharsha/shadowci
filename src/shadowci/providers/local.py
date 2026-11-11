@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from pathlib import Path
 
+from shadowci.classification import FailureClassification
 from shadowci.events import ChangeSet, CheckResult
 from shadowci.providers.base import LLMProvider
 from shadowci.providers.prompts import build_fix_prompt, build_test_prompt
@@ -35,16 +37,45 @@ class LocalModelProvider(LLMProvider):
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        self._worktree_root: Path | None = None
+        self._project_root: Path | None = None
+        self._classification: FailureClassification | None = None
+
+    def configure_prompt_context(
+        self,
+        worktree_root: Path,
+        project_root: Path,
+        classification: FailureClassification | None = None,
+    ) -> None:
+        self._worktree_root = worktree_root
+        self._project_root = project_root
+        self._classification = classification
 
     def write_regression_test(
         self, changeset: ChangeSet, check_results: tuple[CheckResult, ...]
     ) -> str:
-        return self._complete(build_test_prompt(changeset, check_results))
+        return self._complete(
+            build_test_prompt(
+                changeset,
+                check_results,
+                self._worktree_root,
+                self._project_root,
+                classification=self._classification,
+            )
+        )
 
     def propose_fix(
         self, changeset: ChangeSet, check_results: tuple[CheckResult, ...]
     ) -> str:
-        return self._complete(build_fix_prompt(changeset, check_results))
+        return self._complete(
+            build_fix_prompt(
+                changeset,
+                check_results,
+                self._worktree_root,
+                self._project_root,
+                classification=self._classification,
+            )
+        )
 
     def _complete(self, prompt: str) -> str:
         payload = json.dumps(
