@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import shadowci.checks.lint_runner as lint_runner
@@ -53,6 +54,48 @@ _VALID_FIX = (
 )
 
 _FAILING_CHECKS = (CheckResult(name="pytest-targeted", passed=False, output="AssertionError"),)
+
+_REGRESSION_TEST_ALT = (
+    "import pathlib\n"
+    "\n"
+    "def test_add_regression_alt():\n"
+    "    source = pathlib.Path('app.py').read_text()\n"
+    "    namespace = {}\n"
+    "    exec(source, namespace)\n"
+    "    assert namespace['add'](10, 20) == 30\n"
+)
+
+_ROUND2_BUGGY_APP = _FIXED_APP + "\n\ndef double(a):\n    return a + 1\n"
+_ROUND2_FIXED_APP = _FIXED_APP + "\n\ndef double(a):\n    return a * 2\n"
+
+_ROUND2_REGRESSION_TEST = (
+    "import pathlib\n"
+    "\n"
+    "def test_double_regression():\n"
+    "    source = pathlib.Path('app.py').read_text()\n"
+    "    namespace = {}\n"
+    "    exec(source, namespace)\n"
+    "    assert namespace['double'](3) == 6\n"
+)
+
+_ROUND2_FIX = (
+    "--- a/app.py\n"
+    "+++ b/app.py\n"
+    "@@ -1,6 +1,6 @@\n"
+    " def add(a, b):\n"
+    "     return a + b\n"
+    " \n"
+    " \n"
+    " def double(a):\n"
+    "-    return a + 1\n"
+    "+    return a * 2\n"
+)
+
+
+def _ghost_test_filename_in_diff(diff: str) -> str:
+    match = re.search(r"tests/(test_shadowci_ghost_[0-9a-f]+\.py)", diff)
+    assert match, f"no ghost test filename found in diff:\n{diff}"
+    return match.group(1)
 
 
 def _stub_lint_and_type_checks(monkeypatch) -> None:
@@ -280,3 +323,79 @@ def test_build_survives_a_same_mtime_bytecode_collision(git_repo: Path, monkeypa
     assert "return a + b" in patch.diff
     assert patch.evidence.all_checks_passed
     assert shadow_app.read_text() == _SAME_LENGTH_FIXED
+
+
+def _build_isolated_patch(git_repo: Path, regression_test: str, fix: str = _VALID_FIX):
+    """Build one ghost patch for `app.py` in a fresh worktree, then tear the
+    worktree down so a second call starts from the same buggy state again."""
+    worktree, changeset = _sync_buggy_app(git_repo)
+    try:
+        return GhostPatchBuilder(worktree).build(changeset, _FAILING_CHECKS, regression_test, fix)
+    finally:
+        worktree.remove()
+
+
+def test_two_ghost_patches_for_the_same_path_with_different_tests_get_different_filenames(
+    git_repo: Path, monkeypatch
+):
+    _stub_lint_and_type_checks(monkeypatch)
+
+    patch_a = _build_isolated_patch(git_repo, _REGRESSION_TEST)
+    patch_b = _build_isolated_patch(git_repo, _REGRESSION_TEST_ALT)
+
+    filename_a = _ghost_test_filename_in_diff(patch_a.diff)
+    filename_b = _ghost_test_filename_in_diff(patch_b.diff)
+
+    assert filename_a != filename_b, (
+        "two different regression tests generated for the same changed file "
+        f"must not both be written to {filename_a!r}"
+    )
+
+
+def test_two_ghost_patches_for_the_same_path_with_identical_tests_get_the_same_filename(
+    git_repo: Path, monkeypatch
+):
+    _stub_lint_and_type_checks(monkeypatch)
+
+    patch_a = _build_isolated_patch(git_repo, _REGRESSION_TEST)
+    patch_b = _build_isolated_patch(git_repo, _REGRESSION_TEST)
+
+    assert _ghost_test_filename_in_diff(patch_a.diff) == _ghost_test_filename_in_diff(
+        patch_b.diff
+    )
+
+
+def test_second_ghost_patch_for_the_same_file_applies_after_the_first_one_is_already_live(
+    git_repo: Path, monkeypatch
+):
+    """Reproduces GitHub issue #25: once one ghost patch for a file has been
+    applied to the live tree, a later ghost patch for the *same* file must
+    still be able to apply — it must not try to recreate the first patch's
+    regression test file at the same path and collide."""
+    _stub_lint_and_type_checks(monkeypatch)
+
+    worktree, changeset = _sync_buggy_app(git_repo)
+    patch1 = GhostPatchBuilder(worktree).build(
+        changeset, _FAILING_CHECKS, _REGRESSION_TEST, _VALID_FIX
+    )
+    apply_to_live_tree(patch1.diff, git_repo)
+    assert (git_repo / "app.py").read_text() == _FIXED_APP
+
+    live_file = git_repo / "app.py"
+    live_file.write_text(_ROUND2_BUGGY_APP)
+    changeset2 = ChangeSet(events=(FileChangeEvent(path=live_file, kind=ChangeKind.MODIFIED),))
+    worktree.sync(list(changeset2.events))
+
+    patch2 = GhostPatchBuilder(worktree).build(
+        changeset2, _FAILING_CHECKS, _ROUND2_REGRESSION_TEST, _ROUND2_FIX
+    )
+
+    assert check_applies_to_live_tree(patch2.diff, git_repo) is True, (
+        "a second ghost patch for the same file no longer applies to the "
+        "live tree, exactly as described in issue #25"
+    )
+    apply_to_live_tree(patch2.diff, git_repo)
+
+    assert (git_repo / "app.py").read_text() == _ROUND2_FIXED_APP
+    ghost_tests = list((git_repo / "tests").glob("test_shadowci_ghost_*.py"))
+    assert len(ghost_tests) == 2, "both regression tests should land as separate files"
