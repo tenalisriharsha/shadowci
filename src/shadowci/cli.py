@@ -109,6 +109,18 @@ def _print_check_result(result: CheckResult) -> None:
             print(f"    {line}")
 
 
+def _print_question(question: pipeline.QuestionOutcome) -> None:
+    keep = question.keep_old_behaviour
+    update = question.update_the_test
+    print(
+        "  your change broke a test on purpose — "
+        "update the test, or keep the old behavior?"
+    )
+    print(f"    keep old behaviour : {keep.digest}  ({keep.patch.evidence.summary})")
+    print(f"    update the test    : {update.digest}  ({update.patch.evidence.summary})")
+    print("    apply either with: shadowci apply-ghost <digest>")
+
+
 def _run_checks_and_maybe_escalate(
     changeset: ChangeSet, worktree: ShadowWorktree, config: ShadowCIConfig
 ) -> None:
@@ -147,6 +159,10 @@ def _run_checks_and_maybe_escalate(
 
     if outcome.ghost_patch_error is not None:
         print(f"  could not verify a ghost patch: {outcome.ghost_patch_error}", file=sys.stderr)
+        return
+
+    if outcome.question is not None:
+        _print_question(outcome.question)
         return
 
     if outcome.ghost_patch is None or outcome.ghost_patch_path is None:
@@ -307,7 +323,9 @@ def _cmd_ghosts(args: argparse.Namespace) -> int:
         metadata = listing.metadata or {}
         summary = metadata.get("summary", "(no summary)")
         files = ", ".join(metadata.get("files", [])) or "(unknown files)"
-        print(f"{listing.digest}  [{status}]  {summary}  ({files})")
+        kind = metadata.get("kind", "fix")
+        kind_label = f"  [{kind}]" if kind != "fix" else ""
+        print(f"{listing.digest}  [{status}]{kind_label}  {summary}  ({files})")
     return 0
 
 
