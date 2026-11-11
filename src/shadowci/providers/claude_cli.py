@@ -66,6 +66,13 @@ class ClaudeCLIProvider(LLMProvider):
     ) -> str:
         return self._run(build_fix_prompt(changeset, check_results))
 
+    def health_check(self, timeout_seconds: float = 30.0) -> str:
+        """One trivial `claude -p` call, used by `shadowci doctor` to confirm
+        the CLI can answer. Raises `ClaudeCLIProviderError` with the real
+        output on failure, same as a normal invocation."""
+        probe = ClaudeCLIProvider(self._binary, timeout_seconds=timeout_seconds)
+        return probe._run("Reply with the single word OK.")
+
     def _run(self, prompt: str) -> str:
         try:
             result = subprocess.run(

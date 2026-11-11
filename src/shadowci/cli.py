@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from shadowci import pipeline
+from shadowci import doctor, pipeline
 from shadowci.changeset import ChangeSetDetector
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
 from shadowci.events import ChangeSet, CheckResult, Signal
@@ -79,6 +79,26 @@ def _cmd_status(args: argparse.Namespace) -> int:
         f"min signals={config.interruption_min_signals}"
     )
     return 0
+
+
+def _print_doctor_check(check: doctor.DoctorCheck) -> None:
+    print(f"[{check.status}] {check.name}: {check.message}")
+    if check.status != doctor.OK and check.fix_hint:
+        print(f"  {check.fix_hint}")
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+
+    if args.fix:
+        for line in doctor.apply_fixes(root):
+            print(line)
+
+    checks = doctor.run_checks(root)
+    for check in checks:
+        _print_doctor_check(check)
+
+    return 1 if any(check.status == doctor.FAIL for check in checks) else 0
 
 
 def _print_check_result(result: CheckResult) -> None:
@@ -417,6 +437,17 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="show current configuration")
     status_parser.add_argument("path", nargs="?", default=".")
     status_parser.set_defaults(func=_cmd_status)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="diagnose whether ShadowCI can work in this project and how to fix it"
+    )
+    doctor_parser.add_argument("path", nargs="?", default=".")
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="apply the safe fixes (recreate the shadow worktree, drop stale ghost patches)",
+    )
+    doctor_parser.set_defaults(func=_cmd_doctor)
 
     watch_parser = subparsers.add_parser("watch", help="watch for changes and sync the shadow worktree")
     watch_parser.add_argument("path", nargs="?", default=".")
