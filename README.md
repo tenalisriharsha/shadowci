@@ -52,6 +52,16 @@ should never trigger anything — through that exact same pipeline on a
 simulated clock, and reports detection latency, precision, accept rate,
 and false interruptions with no human in the loop.
 
+`shadowci doctor` checks whether ShadowCI can actually work in the current
+project — is it a git repository, can `shadowci.toml` be read, does the
+shadow worktree exist, does the configured provider answer (a real,
+30-second `claude -p` call for `claude-cli`), are pytest/mypy/ruff
+importable, and has any saved ghost patch gone stale — and prints one
+`OK`/`WARN`/`FAIL` line per check plus a `Try:` hint for anything that
+isn't `OK`. `doctor --fix` applies the fixes that are always safe
+(recreating a missing shadow worktree, discarding stale ghost patches)
+without ever touching a project source file.
+
 ## Quick Start
 
 ```bash
@@ -73,6 +83,8 @@ shadowci reject-ghost <patch>           # discard a saved patch (records "reject
 shadowci ignore-ghost <patch>             # leave a saved patch unapplied (records "ignore")
 shadowci signals                           # show recorded signal history and current policy scores
 shadowci evaluate                      # replay the built-in scenario suite and report metrics
+shadowci doctor                          # diagnose whether ShadowCI can work here, and how to fix it
+shadowci doctor --fix                      # apply the safe fixes (shadow worktree, stale patches)
 ```
 
 ## Preview
@@ -186,6 +198,13 @@ times by hand.
 
 ![shadowci test suite passing](docs/screenshots/09-test-suite.png)
 
+**`shadowci doctor`** — diagnoses whether ShadowCI can actually work in
+this project (git repo, config, shadow worktree, the configured provider,
+pytest/mypy/ruff, stale ghost patches) and prints a `Try:` fix for
+anything that isn't `OK`; here the project is healthy.
+
+![shadowci doctor reporting a healthy project](docs/screenshots/19-doctor.png)
+
 ## How It Works
 
 ```
@@ -255,7 +274,7 @@ through the same code the TUI uses) by `scripts/capture_screenshots.py`
 
 ## Status
 
-ShadowCI's planned feature set is complete and fully tested (152 tests):
+ShadowCI's planned feature set is complete and fully tested (190 tests):
 
 - Project scaffold, core data model, file watcher, change-set detector, and
   shadow git worktree.
@@ -280,6 +299,11 @@ ShadowCI's planned feature set is complete and fully tested (152 tests):
   (optionally synthetic-bug-injected) sessions through the real pipeline on
   a simulated clock and reports detection latency, precision, accept rate,
   and false interruptions with no human in the loop.
+- `shadowci doctor`: diagnoses whether ShadowCI can work in this project
+  (git repo, config, shadow worktree, configured provider, pytest/mypy/
+  ruff, stale ghost patches), printing `OK`/`WARN`/`FAIL` plus a `Try:` fix
+  command for anything that isn't `OK`; `doctor --fix` applies the fixes
+  that are always safe without ever touching a source file.
 
 See [PROGRESS.md](PROGRESS.md) for the phase-by-phase build history and
 [DAILY_REPORT.md](DAILY_REPORT.md) for a summary of what was built, test

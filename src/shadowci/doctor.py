@@ -1,0 +1,186 @@
+"""`shadowci doctor`: diagnose whether ShadowCI can work in this project.
+
+Each check reports `OK`, `WARN`, or `FAIL` and, for anything not `OK`, a
+`fix_hint` naming the exact command that fixes it. `--fix`
+(`apply_fixes`) applies only the fixes that are always safe to make
+automatically — recreating the shadow worktree, discarding stale ghost
+patches — and never touches a project source file.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+from shadowci import pipeline
+from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
+from shadowci.providers import (
+    ClaudeCLIProvider,
+    ClaudeCLIProviderError,
+    create_provider,
+)
+from shadowci.shadow_worktree import ShadowWorktree, ShadowWorktreeError
+
+OK = "OK"
+WARN = "WARN"
+FAIL = "FAIL"
+
+OPTIONAL_TOOLS = ("pytest", "mypy", "ruff")
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    """One diagnostic result: a name, a status, and why."""
+
+    name: str
+    status: str
+    message: str
+    fix_hint: str | None = None
+
+
+def _check_git(root: Path) -> DoctorCheck:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return DoctorCheck(
+            "git repository", FAIL, "git is not installed", "Try: install git."
+        )
+
+    if result.returncode != 0 or result.stdout.strip() != "true":
+        return DoctorCheck(
+            "git repository",
+            FAIL,
+            f"{root} is not a git repository",
+            f"Try: run `git init` in {root}.",
+        )
+    return DoctorCheck("git repository", OK, "this is a git repository")
+
+
+def _load_config_for_doctor(root: Path) -> tuple[ShadowCIConfig, DoctorCheck]:
+    config_path = root / DEFAULT_CONFIG_FILENAME
+    if not config_path.exists():
+        return ShadowCIConfig(project_root=root), DoctorCheck(
+            "config", OK, f"no {DEFAULT_CONFIG_FILENAME} found, using defaults"
+        )
+
+    try:
+        config = load_config(root)
+    except Exception as exc:  # noqa: BLE001 - any parse failure is a real FAIL
+        return ShadowCIConfig(project_root=root), DoctorCheck(
+            "config",
+            FAIL,
+            f"{config_path} could not be read: {exc}",
+            f"Try: fix the syntax in {config_path}.",
+        )
+    return config, DoctorCheck("config", OK, f"{config_path} read successfully")
+
+
+def _check_worktree(worktree: ShadowWorktree) -> DoctorCheck:
+    if worktree.exists():
+        return DoctorCheck(
+            "shadow worktree", OK, f"shadow worktree ready at {worktree.path}"
+        )
+    return DoctorCheck(
+        "shadow worktree",
+        FAIL,
+        f"no shadow worktree at {worktree.path}",
+        "Try: run `shadowci init` (or `shadowci doctor --fix`).",
+    )
+
+
+def _check_provider(config: ShadowCIConfig) -> DoctorCheck:
+    try:
+        provider = create_provider(config.provider)
+    except ValueError as exc:
+        return DoctorCheck(
+            "provider",
+            FAIL,
+            str(exc),
+            f"Try: fix `provider` in {DEFAULT_CONFIG_FILENAME}.",
+        )
+
+    if isinstance(provider, ClaudeCLIProvider):
+        try:
+            provider.health_check()
+        except ClaudeCLIProviderError as exc:
+            return DoctorCheck("provider", FAIL, str(exc))
+        return DoctorCheck("provider", OK, "claude-cli answered a trivial prompt")
+
+    return DoctorCheck(
+        "provider", OK, f"provider '{config.provider}' needs no connectivity check"
+    )
+
+
+def _check_tool(tool: str) -> DoctorCheck:
+    if importlib.util.find_spec(tool) is not None:
+        return DoctorCheck(tool, OK, f"{tool} is importable")
+    return DoctorCheck(
+        tool, WARN, f"{tool} is not installed", f"Try: pip install {tool}."
+    )
+
+
+def _check_ghost_patches(root: Path) -> DoctorCheck:
+    listings = pipeline.list_ghost_patches(root)
+    if not listings:
+        return DoctorCheck("ghost patches", OK, "no saved ghost patches")
+
+    stale = [listing for listing in listings if not listing.ready]
+    if not stale:
+        return DoctorCheck(
+            "ghost patches",
+            OK,
+            f"{len(listings)} saved ghost patch(es), all ready to apply",
+        )
+
+    names = ", ".join(listing.patch_path.stem for listing in stale)
+    return DoctorCheck(
+        "ghost patches",
+        WARN,
+        f"{len(stale)} stale ghost patch(es) no longer apply to the live tree: {names}",
+        "Try: run `shadowci doctor --fix` (or `shadowci ghosts --clean`).",
+    )
+
+
+def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
+    """Every diagnostic check for the project at `root`, in a fixed order."""
+    config, config_check = _load_config_for_doctor(root)
+    worktree = ShadowWorktree(config)
+
+    checks = [
+        _check_git(root),
+        config_check,
+        _check_worktree(worktree),
+        _check_provider(config),
+    ]
+    checks.extend(_check_tool(tool) for tool in OPTIONAL_TOOLS)
+    checks.append(_check_ghost_patches(root))
+    return tuple(checks)
+
+
+def apply_fixes(root: Path) -> list[str]:
+    """Apply only the fixes that are always safe: recreate a missing shadow
+    worktree, discard ghost patches that no longer apply. Never touches a
+    project source file."""
+    config, _ = _load_config_for_doctor(root)
+    worktree = ShadowWorktree(config)
+    applied: list[str] = []
+
+    if not worktree.exists():
+        try:
+            worktree.ensure_created()
+            applied.append(f"created shadow worktree at {worktree.path}")
+        except ShadowWorktreeError as exc:
+            applied.append(f"could not create shadow worktree: {exc}")
+
+    for name in pipeline.clean_ghost_patches(root):
+        applied.append(f"removed stale ghost patch: {name}")
+
+    return applied
