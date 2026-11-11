@@ -653,6 +653,21 @@ def main() -> None:
             browser,
         )
 
+        # 19. doctor — diagnose whether ShadowCI can work here; the demo
+        # repo was `init`ed earlier in this run, so every check is healthy.
+        cmd = [PYTHON, "-m", "shadowci", "doctor", "."]
+        result = run(cmd, cwd=demo_repo)
+        shot(
+            render(
+                label(demo_repo),
+                "shadowci doctor .",
+                result.stdout, result.stderr, result.returncode,
+                "shadowci doctor — diagnose and fix",
+            ),
+            OUT_DIR / "19-doctor.png",
+            browser,
+        )
+
         browser.close()
 
     shutil.rmtree(demo_repo, ignore_errors=True)
