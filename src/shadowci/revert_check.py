@@ -130,6 +130,116 @@ def failing_tests_by_file(failing_checks: tuple[CheckResult, ...]) -> dict[str, 
     return by_file
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _function_ranges(source: str) -> list[tuple[int, int, str]]:
+    """`(start_line, end_line, name)` for every `def`/`async def` in
+    `source`, nested ones included - inclusive, 1-based, matching the
+    line numbers a unified diff uses."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    ranges = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            end = node.end_lineno if node.end_lineno is not None else node.lineno
+            ranges.append((node.lineno, end, node.name))
+    return ranges
+
+
+def _enclosing_function(ranges: list[tuple[int, int, str]], line: int) -> str | None:
+    """The name of the innermost function in `ranges` whose body contains
+    `line` - the one with the latest start among every range containing
+    it, since a nested `def` always starts after the one enclosing it."""
+    best: tuple[int, int, str] | None = None
+    for start, end, name in ranges:
+        if start <= line <= end and (best is None or start > best[0]):
+            best = (start, end, name)
+    return best[2] if best else None
+
+
+def _git_show_head(worktree_path: Path, relative: str) -> str | None:
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{relative}"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def changed_function_names(worktree_path: Path, diff_text: str) -> list[str]:
+    """The name(s) of the function(s) whose *body* `diff_text` (a unified
+    `git diff HEAD`) actually adds or removes a line inside - never a
+    function merely shown as unchanged hunk context - in the order
+    they're first touched. A diff whose changed lines fall inside no
+    function body at all (a module-level edit) yields an empty list.
+
+    Each file's enclosing-function ranges are computed once from HEAD's
+    blob (for removed lines) and the worktree's current copy (for added
+    lines), then every hunk's line-by-line `+`/`-`/` ` markers are walked
+    to track exactly which old/new line numbers actually changed.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    old_ranges: list[tuple[int, int, str]] = []
+    new_ranges: list[tuple[int, int, str]] = []
+    old_line = new_line = 0
+    in_hunk = False
+
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            in_hunk = False
+            target = line[len("+++ ") :].strip()
+            relative = None if target == "/dev/null" else target.removeprefix("b/")
+            old_source = _git_show_head(worktree_path, relative) if relative else None
+            new_path = worktree_path / relative if relative else None
+            new_source = (
+                new_path.read_text()
+                if new_path is not None and new_path.is_file()
+                else None
+            )
+            old_ranges = _function_ranges(old_source) if old_source is not None else []
+            new_ranges = _function_ranges(new_source) if new_source is not None else []
+            continue
+
+        if line.startswith(("diff --git", "--- ")):
+            in_hunk = False
+            continue
+
+        match = _HUNK_HEADER_RE.match(line)
+        if match:
+            old_line = int(match.group(1))
+            new_line = int(match.group(3))
+            in_hunk = True
+            continue
+
+        if not in_hunk:
+            continue
+
+        if line.startswith(" "):
+            old_line += 1
+            new_line += 1
+        elif line.startswith("-"):
+            name = _enclosing_function(old_ranges, old_line)
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+            old_line += 1
+        elif line.startswith("+"):
+            name = _enclosing_function(new_ranges, new_line)
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+            new_line += 1
+        # anything else (e.g. "\ No newline at end of file") moves neither counter
+
+    return names
+
+
 def _is_pytest_raises(node: ast.With) -> bool:
     if len(node.items) != 1:
         return False
