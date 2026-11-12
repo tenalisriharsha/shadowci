@@ -92,6 +92,19 @@ def test_intentional_behavior_change_scenario_has_an_ask_outcome_not_fix_or_sile
     assert len(scenario.session.edits) == 1
 
 
+def test_built_in_scenarios_include_the_intentional_behavior_change_scenario():
+    # Issue #51: the default `evaluate` suite left out
+    # `intentional_behavior_change_scenario`, so `shadowci evaluate` never
+    # exercised the one case where the right outcome is to ask rather than
+    # fix or stay silent — `reverted_user_change` always read 0 no matter
+    # what the pipeline actually did with it.
+    scenarios = built_in_scenarios()
+    names = [scenario.session.name for scenario in scenarios]
+
+    assert intentional_behavior_change_scenario().session.name in names
+    assert len(scenarios) == 9
+
+
 def test_intentional_behavior_change_scenario_edit_changes_behavior_on_purpose():
     # average([]) used to raise; the edit makes it return 0 instead — an
     # intentional change, not an accidental off-by-one or inverted guard.

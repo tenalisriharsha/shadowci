@@ -111,6 +111,71 @@ def test_run_suite_no_longer_flags_the_intentional_change_scenario_once_it_asks(
     assert report.reverted_user_change == 0
 
 
+def test_default_suite_catches_a_disabled_revert_check_via_reverted_user_change(monkeypatch):
+    # Issue #51: the default suite never ran the intentional-change
+    # scenario at all, so `reverted_user_change` always read 0 for
+    # `shadowci evaluate` regardless of whether the pipeline's revert
+    # check (issue #37) still worked. Disabling that check (as if it
+    # regressed) must flip this metric for the *default* built-in suite,
+    # not just for the scenario replayed on its own.
+    monkeypatch.setattr(pipeline, "fix_reverts_user_change", lambda *a, **k: False)
+
+    report = run_suite(built_in_scenarios())
+
+    assert report.reverted_user_change == 1
+
+
+def test_evaluation_report_counts_a_correct_ask_as_neither_a_hit_nor_a_miss():
+    # Issue #51 acceptance: an "ask" outcome (a two-option question saved,
+    # no verified fix) must score as correct — not a false interruption,
+    # not a miss — and must not distort precision or accept rate.
+    bug = Scenario(
+        session=RecordedSession(name="bug", initial_files={}),
+        bug_expected=True,
+        expected_outcome="fix",
+    )
+    silent = Scenario(
+        session=RecordedSession(name="silent", initial_files={}),
+        bug_expected=False,
+        expected_outcome="silent",
+    )
+    ask = Scenario(
+        session=RecordedSession(name="ask", initial_files={}),
+        bug_expected=False,
+        expected_outcome="ask",
+    )
+
+    results = (
+        ScenarioResult(scenario=bug, detected=True, action="accept"),
+        ScenarioResult(scenario=silent, detected=False),
+        ScenarioResult(scenario=ask, detected=False),  # correctly asked, no fix saved
+    )
+    report = EvaluationReport(results=results)
+
+    assert report.true_positives == 1
+    assert report.false_negatives == 0
+    assert report.false_interruptions == 0
+    assert report.precision == 1.0
+    assert report.accept_rate == 1.0
+
+
+def test_evaluation_report_counts_a_wrongly_fixed_ask_scenario_as_a_false_interruption():
+    # The flip side: if the pipeline fixes instead of asking on a scenario
+    # whose right outcome is "ask", that is a false interruption, not a
+    # silently-accepted correct fix.
+    ask = Scenario(
+        session=RecordedSession(name="ask", initial_files={}),
+        bug_expected=False,
+        expected_outcome="ask",
+    )
+    result = ScenarioResult(scenario=ask, detected=True, action="reject", reverted_user_change=True)
+    report = EvaluationReport(results=(result,))
+
+    assert report.false_interruptions == 1
+    assert report.reverted_user_change == 1
+    assert report.precision == 0.0
+
+
 def test_run_convergence_requires_a_bug_scenario_with_test_and_fix():
     with pytest.raises(ValueError):
         run_convergence(clean_comment_scenario())
