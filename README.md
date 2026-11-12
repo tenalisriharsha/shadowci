@@ -82,7 +82,12 @@ means there's no safe rewrite, so ShadowCI falls back to the normal fix flow
 instead of asking you to accept a test that asserts nothing — there's no
 real second option to offer. `shadowci ghosts` lists the pair labelled
 `[question: ...]`; `apply-ghost <digest>` applies whichever one you choose
-and retires its sibling without recording a signal for it.
+and retires its sibling without recording a signal for it. The "keep old
+behavior" option never bundles a new regression test file either: it's
+just a revert back to `HEAD`, so the already-failing test that triggered
+the question *is* the regression test for it — `shadowci ghosts` and that
+option's evidence say it's covered by the existing test instead of adding
+a duplicate under `tests/`.
 
 To help a provider actually recognize a deliberate change instead of
 guessing from the check output alone, its prompts (issue #39) carry the
@@ -375,7 +380,11 @@ ShadowCI's planned feature set is complete and fully tested (313 tests):
   two-option question (`kind: "question"`, sharing a `group` id) instead
   of a silent fix whenever a matching test rewrite can also be verified;
   `apply-ghost <digest>` applies the chosen option and retires its sibling
-  with no signal recorded for it.
+  with no signal recorded for it. The "keep old behaviour" option's patch
+  (issue #50) never bundles a new `tests/` file for its regression test —
+  it's a plain revert back to `HEAD`, so the test already failing because
+  of the user's edit already covers it, and bundling a copy of it under a
+  fresh ghost filename would just duplicate an existing test.
 - Failure classification (issue #38): before escalating, ShadowCI sorts a
   failure into `regression-elsewhere` (edited code the failing test
   doesn't cover, which passed at `HEAD`), `test-edited` (the user edited

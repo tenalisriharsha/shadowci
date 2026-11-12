@@ -488,6 +488,14 @@ def run_checks_and_maybe_escalate(
     ):
         update_test_patch = build_update_test_patch(worktree, changeset, failing)
 
+    # Issue #50: when this patch will become the "keep old behaviour" option
+    # (i.e. `update_test_patch` was built above), it's a plain revert back
+    # to `HEAD` — the test(s) already failing in `failing` are exactly what
+    # will pass once it's applied, so they already cover it. Bundling the
+    # model's regression test as a brand-new `tests/` file on top of that
+    # would just duplicate an existing test.
+    covering_test = _failing_test_name(failing) if update_test_patch is not None else None
+
     try:
         builder = GhostPatchBuilder(worktree)
         patch = builder.build(
@@ -495,6 +503,7 @@ def run_checks_and_maybe_escalate(
             escalation.failing_checks,
             escalation.regression_test,
             fix_diff,
+            covering_test=covering_test,
         )
     except GhostPatchError as exc:
         return PipelineOutcome(
