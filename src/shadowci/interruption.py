@@ -31,6 +31,8 @@ from shadowci.signals import SignalStore
 DEFAULT_THRESHOLD = 0.34
 DEFAULT_MIN_SIGNALS = 2
 
+INTENTIONAL_CHANGE_REASON = "intentional-change"
+
 
 def fingerprint_for_patch(patch: GhostPatch, failure_class: str | None = None) -> str:
     """A stable key for "this kind of fix", used to look up signal history.
@@ -77,7 +79,16 @@ class InterruptionPolicy:
         return self.evaluate_fingerprint(fingerprint)
 
     def evaluate_fingerprint(self, fingerprint: str) -> InterruptionDecision:
-        history = self._store.for_fingerprint(fingerprint)
+        # Issue #40: a reject recorded with reason "intentional-change" means
+        # the patch itself was fine — the user rejected it because their own
+        # uncommitted edit was deliberate, not because the fix was wrong. It
+        # must not lower this fingerprint's score, so it's excluded from the
+        # history entirely rather than counted as score=0 "ignore"-like noise.
+        history = tuple(
+            record
+            for record in self._store.for_fingerprint(fingerprint)
+            if record.reason != INTENTIONAL_CHANGE_REASON
+        )
         sample_size = len(history)
 
         if sample_size < self._min_signals:

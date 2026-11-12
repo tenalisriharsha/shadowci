@@ -22,12 +22,20 @@ DEFAULT_SIGNALS_FILENAME = ".shadowci/signals.json"
 
 @dataclass(frozen=True)
 class SignalRecord:
-    """One recorded accept/reject/ignore for a given fingerprint."""
+    """One recorded accept/reject/ignore for a given fingerprint.
+
+    `reason` (issue #40) is set only on a reject, to say *why* — e.g.
+    `"intentional-change"` when the user rejected a patch because their
+    own uncommitted edit was intentional, not because the fix was wrong.
+    It defaults to `None`, so a signals file written before this field
+    existed still loads.
+    """
 
     fingerprint: str
     signal: Signal
     patch_digest: str
     recorded_at: float
+    reason: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -35,6 +43,7 @@ class SignalRecord:
             "signal": self.signal.value,
             "patch_digest": self.patch_digest,
             "recorded_at": self.recorded_at,
+            "reason": self.reason,
         }
 
     @staticmethod
@@ -44,6 +53,7 @@ class SignalRecord:
             signal=Signal(data["signal"]),
             patch_digest=data["patch_digest"],
             recorded_at=float(data["recorded_at"]),
+            reason=data.get("reason"),
         )
 
 
@@ -68,13 +78,20 @@ class SignalStore:
     def for_fingerprint(self, fingerprint: str) -> tuple[SignalRecord, ...]:
         return tuple(record for record in self.all() if record.fingerprint == fingerprint)
 
-    def record(self, fingerprint: str, signal: Signal, patch_digest: str) -> SignalRecord:
+    def record(
+        self,
+        fingerprint: str,
+        signal: Signal,
+        patch_digest: str,
+        reason: str | None = None,
+    ) -> SignalRecord:
         """Append a new signal and persist the full history."""
         new_record = SignalRecord(
             fingerprint=fingerprint,
             signal=signal,
             patch_digest=patch_digest,
             recorded_at=time.time(),
+            reason=reason,
         )
         records = (*self.all(), new_record)
         self._path.parent.mkdir(parents=True, exist_ok=True)
