@@ -14,6 +14,19 @@ checker and a linter (both skipped harmlessly if not installed). An LLM is
 only called once one of those checks actually fails — and when it does,
 ShadowCI asks it to write a regression test and propose a fix.
 
+The shadow worktree is kept an exact mirror of your live tree, not just a
+one-time snapshot: whenever a change set is ready and your live `HEAD` has
+moved — a commit, pull, checkout, or rebase — ShadowCI rebaselines the
+shadow onto that commit and overlays your current uncommitted/untracked/
+deleted files before anything is checked. A change set that only exists
+because of the git operation itself (nothing in it is actually
+uncommitted) triggers no checks and no model call; ShadowCI just prints
+`rebaselined shadow worktree to <sha>`. This keeps "the user's own edit" —
+the shadow's `git diff HEAD`, used by the revert check below — from ever
+including work you already committed. While a rebase, merge, cherry-pick,
+or bisect is in progress, syncing and checks are held back entirely until
+it's over.
+
 LLM access is pluggable — a scripted deterministic policy for tests and CI,
 headless `claude -p`, or a local model server (Ollama-compatible) — so the
 whole system runs and is fully testable with no paid API key. When a check
@@ -80,30 +93,42 @@ An evaluation harness (`shadowci evaluate`) replays a suite of recorded
 sessions — some with a synthetically injected bug, some clean edits that
 should never trigger anything — through that exact same pipeline on a
 simulated clock, and reports detection latency, precision, accept rate,
-false interruptions, and `reverted_user_change` with no human in the loop.
-That last metric counts a saved, verified fix whose diff would put back
-lines the user had deliberately changed — the case where a confidently
-"verified" fix is still the wrong call because the edit broke an old test
-on purpose, exercised by the (not built-in) `intentional-behavior-change`
-scenario in `shadowci.evaluation.scenarios`. Now that the pipeline asks
-instead of silently fixing that case (see above), the scenario is scored
-as `ask`, not a reverted fix — `reverted_user_change` for it reads 0. The
-built-in suite also includes `garbage-code` and `garbage-code-import-error`:
-edits that leave `calc.py` unable to even import (a `NameError`/`ImportError`,
+false interruptions, `reverted_user_change`, and `reverted_committed_work`
+with no human in the loop. `reverted_user_change` counts a saved, verified
+fix whose diff would put back lines the user had deliberately changed —
+the case where a confidently "verified" fix is still the wrong call
+because the edit broke an old test on purpose, exercised by the (not
+built-in) `intentional-behavior-change` scenario in
+`shadowci.evaluation.scenarios`. Now that the pipeline asks instead of
+silently fixing that case (see above), the scenario is scored as `ask`,
+not a reverted fix — `reverted_user_change` for it reads 0. The built-in
+suite also includes `garbage-code` and `garbage-code-import-error`: edits
+that leave `calc.py` unable to even import (a `NameError`/`ImportError`,
 not a logic bug), whose correct fix happens to restore the exact lines the
 user's edit changed. They pin down the opposite case — that restoring
 HEAD's lines is sometimes simply the right fix for a crash, so
 `reverted_user_change` must never flag it.
 
+`reverted_committed_work` is the harness-level check for issue #53: a
+`RecordedSession` can now carry `commits` — offsets at which the harness
+commits whatever's on disk in the sandboxed live repo, between two edits —
+and the built-in `committed-feature-then-bug` scenario uses one to commit
+a small feature before a separate, uncommitted edit introduces a real bug
+elsewhere. The metric counts a replay where any line that commit
+introduced failed to survive to the end of the replay; it must always read
+0, confirming the shadow worktree never treats already-committed work as
+part of "the user's own edit".
+
 `shadowci doctor` checks whether ShadowCI can actually work in the current
 project — is it a git repository, can `shadowci.toml` be read, does the
-shadow worktree exist, does the configured provider answer (a real,
-30-second `claude -p` call for `claude-cli`), are pytest/mypy/ruff
-importable, and has any saved ghost patch gone stale — and prints one
-`OK`/`WARN`/`FAIL` line per check plus a `Try:` hint for anything that
-isn't `OK`. `doctor --fix` applies the fixes that are always safe
-(recreating a missing shadow worktree, discarding stale ghost patches)
-without ever touching a project source file.
+shadow worktree exist, does its `HEAD` still match the live tree's, does
+the configured provider answer (a real, 30-second `claude -p` call for
+`claude-cli`), are pytest/mypy/ruff importable, and has any saved ghost
+patch gone stale — and prints one `OK`/`WARN`/`FAIL` line per check plus a
+`Try:` hint for anything that isn't `OK`. `doctor --fix` applies the fixes
+that are always safe (recreating a missing shadow worktree, rebaselining a
+stale one, discarding stale ghost patches) without ever touching a project
+source file.
 
 ## Quick Start
 
@@ -324,7 +349,7 @@ through the same code the TUI uses) by `scripts/capture_screenshots.py`
 
 ## Status
 
-ShadowCI's planned feature set is complete and fully tested (190 tests):
+ShadowCI's planned feature set is complete and fully tested (313 tests):
 
 - Project scaffold, core data model, file watcher, change-set detector, and
   shadow git worktree.
@@ -379,14 +404,36 @@ ShadowCI's planned feature set is complete and fully tested (190 tests):
 - `shadowci evaluate`: an evaluation harness that replays recorded
   (optionally synthetic-bug-injected) sessions through the real pipeline on
   a simulated clock and reports detection latency, precision, accept rate,
-  false interruptions, and `reverted_user_change` (a saved fix that would
-  undo an on-purpose user edit) with no human in the loop.
+  false interruptions, `reverted_user_change` (a saved fix that would undo
+  an on-purpose user edit), and `reverted_committed_work` (see below) with
+  no human in the loop.
 - `shadowci doctor`: diagnoses whether ShadowCI can work in this project
-  (git repo, config, shadow worktree, configured provider, pytest/mypy/
-  ruff, stale ghost patches, an active pause, a committed wip marker),
-  printing `OK`/`WARN`/`FAIL` plus a `Try:` fix command for anything that
-  isn't `OK`; `doctor --fix` applies the fixes that are always safe
-  without ever touching a source file.
+  (git repo, config, shadow worktree, whether its `HEAD` matches the live
+  tree's, configured provider, pytest/mypy/ruff, stale ghost patches, an
+  active pause, a committed wip marker), printing `OK`/`WARN`/`FAIL` plus a
+  `Try:` fix command for anything that isn't `OK`; `doctor --fix` applies
+  the fixes that are always safe (recreating a missing shadow worktree,
+  rebaselining a stale one, discarding stale ghost patches) without ever
+  touching a source file.
+- Shadow worktree rebaselining (issue #53): the shadow is created detached
+  at the live tree's `HEAD` (`git worktree add --detach`, no longer a
+  `shadowci-shadow` branch — a worktree from before this fix is migrated
+  on first use, and the leftover branch is dropped), and `watch`/`radar`/
+  `evaluate` all keep it rebaselined through one shared
+  `pipeline.sync_shadow_for_changeset` call: once at process start, and
+  again whenever a change set is ready and the live `HEAD` has moved.
+  Rebaselining runs `git checkout --detach --force <live sha>` and `git
+  clean -fd` inside the shadow only — refusing with `ShadowWorktreeError`
+  unless the target is the configured shadow path, isn't the project root,
+  and is a registered worktree of the repo — then overlays every
+  modified/untracked/deleted path outside `ignore_dirs` from the live
+  tree. A change set that exists only because of the git operation itself
+  (nothing in it is genuinely uncommitted) triggers no checks and no model
+  call. While a rebase, merge, cherry-pick, or bisect is in progress on the
+  live tree, syncing and checks are held back until it's over. This is
+  what keeps a committed feature from ever showing up in the shadow's `git
+  diff HEAD` — and therefore from ever being treated as "the user's own
+  edit" by the #37 revert check or the #39 `INTENTIONAL:` flow.
 - Reject reasons and pausing (issue #40): `reject-ghost --reason
   intentional-change` says the patch itself was fine and the reject was
   because your own uncommitted edit was deliberate — that reason is
