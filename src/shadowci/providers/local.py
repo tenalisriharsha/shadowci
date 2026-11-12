@@ -16,6 +16,7 @@ from pathlib import Path
 from shadowci.classification import FailureClassification
 from shadowci.events import ChangeSet, CheckResult
 from shadowci.providers.base import LLMProvider
+from shadowci.providers.fences import strip_code_fence
 from shadowci.providers.prompts import build_fix_prompt, build_test_prompt
 
 
@@ -98,4 +99,4 @@ class LocalModelProvider(LLMProvider):
                 f"local model server at {self._base_url} returned invalid JSON"
             ) from exc
 
-        return str(body.get("response", "")).strip()
+        return strip_code_fence(str(body.get("response", "")).strip())

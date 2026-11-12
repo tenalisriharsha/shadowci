@@ -75,3 +75,36 @@ def test_invalid_json_response_raises_provider_error(monkeypatch):
 
     with pytest.raises(LocalModelProviderError, match="invalid JSON"):
         provider.propose_fix(_CHANGESET, _FAILING)
+
+
+def test_write_regression_test_strips_markdown_fence(monkeypatch):
+    fenced = "```python\ndef test_average():\n    assert 1 == 1\n```"
+    body = json.dumps({"response": fenced}).encode("utf-8")
+
+    def _fake_urlopen(request, timeout):
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    provider = LocalModelProvider()
+
+    test_source = provider.write_regression_test(_CHANGESET, _FAILING)
+
+    assert test_source == "def test_average():\n    assert 1 == 1"
+    compile(test_source, "t.py", "exec")
+
+
+def test_propose_fix_strips_diff_fence(monkeypatch):
+    fenced = "```diff\n--- a/x\n+++ b/x\n```"
+    body = json.dumps({"response": fenced}).encode("utf-8")
+
+    def _fake_urlopen(request, timeout):
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    provider = LocalModelProvider()
+
+    fix = provider.propose_fix(_CHANGESET, _FAILING)
+
+    assert fix.startswith("---")
+    assert "```" not in fix
+
