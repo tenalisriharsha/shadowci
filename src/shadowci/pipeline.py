@@ -30,6 +30,7 @@ from shadowci.ghost import (
     check_applies_to_live_tree,
 )
 from shadowci.interruption import InterruptionDecision, InterruptionPolicy, fingerprint_for_patch
+from shadowci.pause import PAUSE_MESSAGE, current_pause, file_has_wip_marker
 from shadowci.providers.base import LLMProvider
 from shadowci.revert_check import (
     build_update_test_patch,
@@ -80,6 +81,24 @@ def _patch_target_files(patch: GhostPatch, root: Path) -> list[str]:
         except ValueError:
             files.append(str(path))
     return sorted(files)
+
+
+def _escalation_paused_message(
+    changeset: ChangeSet, worktree_path: Path, project_root: Path
+) -> str | None:
+    """Why escalation should be held back for this change set, if at all."""
+    if current_pause(project_root) is not None:
+        return PAUSE_MESSAGE
+
+    for path in changeset.paths:
+        try:
+            relative = path.resolve().relative_to(project_root.resolve())
+        except ValueError:
+            relative = path
+        candidate = worktree_path / relative
+        if candidate.is_file() and file_has_wip_marker(candidate):
+            return PAUSE_MESSAGE
+    return None
 
 
 def _retire_superseded_patches(
@@ -240,6 +259,7 @@ class PipelineOutcome:
     retired_ghost_patches: tuple[str, ...] = ()
     decision: InterruptionDecision | None = None
     question: GhostQuestion | None = None
+    paused_message: str | None = None
 
 
 def run_checks_and_maybe_escalate(
@@ -260,6 +280,17 @@ def run_checks_and_maybe_escalate(
     failing = tuple(result for result in results if not result.passed)
     if not failing:
         return PipelineOutcome(check_results=results, failing_checks=failing)
+
+    # Issue #40: "this is mid-feature, don't judge it yet" — a project-wide
+    # `shadowci pause` or a `# shadowci: wip` marker on a touched file holds
+    # back the model call entirely. Checks above still ran and still synced
+    # into the shadow worktree; only escalation is skipped, so no provider
+    # is ever constructed or called for this change set.
+    paused_message = _escalation_paused_message(changeset, worktree.path, config.project_root)
+    if paused_message is not None:
+        return PipelineOutcome(
+            check_results=results, failing_checks=failing, paused_message=paused_message
+        )
 
     classification = classify_failure(changeset, failing, worktree.path, config.project_root)
     failure_class = (
@@ -480,8 +511,15 @@ def _retire_question_sibling(root: Path, metadata: dict, accepted_patch: Path) -
     return None
 
 
-def reject_patch(root: Path, patch_file: Path) -> ActionResult:
-    """Discard a saved ghost patch and record a reject signal."""
+def reject_patch(root: Path, patch_file: Path, reason: str | None = None) -> ActionResult:
+    """Discard a saved ghost patch and record a reject signal.
+
+    `reason` (issue #40) says *why* the patch was rejected — e.g.
+    `"intentional-change"` when the patch was fine but the user's own
+    uncommitted edit was deliberate. That reason is excluded from the
+    interruption policy's scoring (see `InterruptionPolicy`) instead of
+    counting against the fingerprint the way an ordinary reject does.
+    """
     if not patch_file.is_file():
         return ActionResult(False, f"no such patch file: {patch_file}")
 
@@ -489,9 +527,12 @@ def reject_patch(root: Path, patch_file: Path) -> ActionResult:
     fingerprint = None
     metadata = load_patch_metadata(patch_file)
     if metadata is not None:
-        signal_store(root).record(metadata["fingerprint"], Signal.REJECT, metadata["digest"])
+        signal_store(root).record(
+            metadata["fingerprint"], Signal.REJECT, metadata["digest"], reason=reason
+        )
         fingerprint = metadata["fingerprint"]
-        lines.append(f"recorded signal: reject (fingerprint={fingerprint!r})")
+        reason_suffix = f", reason={reason!r}" if reason else ""
+        lines.append(f"recorded signal: reject (fingerprint={fingerprint!r}{reason_suffix})")
         metadata_path(patch_file).unlink(missing_ok=True)
     else:
         lines.append("no fingerprint metadata found alongside this patch — signal not recorded")

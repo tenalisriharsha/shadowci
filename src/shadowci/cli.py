@@ -26,7 +26,8 @@ import sys
 import time
 from pathlib import Path
 
-from shadowci import doctor, pipeline
+from shadowci import doctor, interruption, pipeline
+from shadowci import pause as pause_module
 from shadowci.changeset import ChangeSetDetector
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
 from shadowci.events import ChangeSet, CheckResult, Signal
@@ -34,6 +35,8 @@ from shadowci.interruption import InterruptionPolicy
 from shadowci.providers import create_provider
 from shadowci.shadow_worktree import ShadowWorktree, ShadowWorktreeError
 from shadowci.watcher import PollingFileWatcher
+
+REJECT_REASONS = ("intentional-change", "wrong-fix", "not-now")
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -78,6 +81,44 @@ def _cmd_status(args: argparse.Namespace) -> int:
         f"interruption     : threshold={config.interruption_threshold}, "
         f"min signals={config.interruption_min_signals}"
     )
+    print(f"pause            : {_describe_pause_state(root)}")
+    return 0
+
+
+def _describe_pause_state(root: Path) -> str:
+    state = pause_module.current_pause(root)
+    if state is None:
+        return "not paused"
+    if state.until is None:
+        return "paused indefinitely (resume with: shadowci resume)"
+    remaining = max(0.0, state.until - time.time())
+    return f"paused, {remaining:.0f}s remaining (resume with: shadowci resume)"
+
+
+def _cmd_pause(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+    duration_seconds = None
+    if args.duration is not None:
+        try:
+            duration_seconds = pause_module.parse_duration(args.duration)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    pause_module.pause(root, duration_seconds)
+    if duration_seconds is None:
+        print("paused: no fix will be generated until `shadowci resume`")
+    else:
+        print(f"paused for {args.duration}: no fix will be generated until it expires or `shadowci resume`")
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    root = Path(args.path).resolve()
+    if pause_module.resume(root):
+        print("resumed: escalation to the model is active again")
+    else:
+        print("not paused")
     return 0
 
 
@@ -118,6 +159,10 @@ def _run_checks_and_maybe_escalate(
         _print_check_result(result)
 
     if not outcome.failing_checks:
+        return
+
+    if outcome.paused_message is not None:
+        print(f"  {outcome.paused_message}")
         return
 
     if outcome.unknown_provider_error is not None:
@@ -269,7 +314,7 @@ def _cmd_reject_ghost(args: argparse.Namespace) -> int:
     if patch_file is None:
         return 1
 
-    result = pipeline.reject_patch(root, patch_file)
+    result = pipeline.reject_patch(root, patch_file, reason=args.reason)
     if not result.ok:
         print(f"error: {result.message}", file=sys.stderr)
         return 1
@@ -346,14 +391,23 @@ def _cmd_signals(args: argparse.Namespace) -> int:
     fingerprints = sorted({record.fingerprint for record in records})
     for fingerprint in fingerprints:
         history = store.for_fingerprint(fingerprint)
+        intentional = sum(
+            1 for record in history if record.reason == interruption.INTENTIONAL_CHANGE_REASON
+        )
         accepts = sum(1 for record in history if record.signal is Signal.ACCEPT)
-        rejects = sum(1 for record in history if record.signal is Signal.REJECT)
+        rejects = sum(
+            1
+            for record in history
+            if record.signal is Signal.REJECT
+            and record.reason != interruption.INTENTIONAL_CHANGE_REASON
+        )
         ignores = sum(1 for record in history if record.signal is Signal.IGNORE)
         decision = policy.evaluate_fingerprint(fingerprint)
         verdict = "would surface" if decision.interrupt else "stays silent"
+        intentional_suffix = f", {intentional} intentional-change" if intentional else ""
         print(
             f"{fingerprint}: {accepts} accept(s), {rejects} reject(s), "
-            f"{ignores} ignore(s) -> score={decision.score:.2f}, {verdict}"
+            f"{ignores} ignore(s){intentional_suffix} -> score={decision.score:.2f}, {verdict}"
         )
     return 0
 
@@ -455,6 +509,22 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("path", nargs="?", default=".")
     status_parser.set_defaults(func=_cmd_status)
 
+    pause_parser = subparsers.add_parser(
+        "pause", help="hold back escalation to the model while a feature is mid-edit"
+    )
+    pause_parser.add_argument("path", nargs="?", default=".")
+    pause_parser.add_argument(
+        "--for",
+        dest="duration",
+        default=None,
+        help="pause for this long, e.g. '30m', '2h', '45s' (default: until `shadowci resume`)",
+    )
+    pause_parser.set_defaults(func=_cmd_pause)
+
+    resume_parser = subparsers.add_parser("resume", help="resume escalation to the model after a pause")
+    resume_parser.add_argument("path", nargs="?", default=".")
+    resume_parser.set_defaults(func=_cmd_resume)
+
     doctor_parser = subparsers.add_parser(
         "doctor", help="diagnose whether ShadowCI can work in this project and how to fix it"
     )
@@ -531,6 +601,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--latest",
         action="store_true",
         help="act on the newest saved ghost patch that still applies, instead of naming one",
+    )
+    reject_parser.add_argument(
+        "--reason",
+        choices=REJECT_REASONS,
+        default=None,
+        help=(
+            "why this patch was rejected. 'intentional-change' means the fix was fine but your "
+            "own edit was deliberate, and is not counted against the fingerprint's score; "
+            "'wrong-fix' and 'not-now' are recorded but still count as an ordinary reject"
+        ),
     )
     reject_parser.set_defaults(func=_cmd_reject_ghost)
 

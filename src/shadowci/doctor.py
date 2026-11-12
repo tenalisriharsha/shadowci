@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from shadowci import pause as pause_module
 from shadowci import pipeline
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
 from shadowci.providers import (
@@ -149,6 +151,56 @@ def _check_ghost_patches(root: Path) -> DoctorCheck:
     )
 
 
+def _check_pause(root: Path) -> DoctorCheck:
+    state = pause_module.current_pause(root)
+    if state is None:
+        return DoctorCheck("pause", OK, "not paused")
+
+    if state.until is None:
+        return DoctorCheck(
+            "pause",
+            WARN,
+            "paused indefinitely — no fix will be generated",
+            "Try: run `shadowci resume` when you're done.",
+        )
+
+    remaining = max(0.0, state.until - time.time())
+    return DoctorCheck(
+        "pause",
+        WARN,
+        f"paused, {remaining:.0f}s remaining — no fix will be generated",
+        "Try: run `shadowci resume` to end it early.",
+    )
+
+
+def _check_wip_marker(root: Path) -> DoctorCheck:
+    try:
+        result = subprocess.run(
+            ["git", "grep", "--fixed-strings", "--files-with-matches", pause_module.WIP_MARKER],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return DoctorCheck("wip marker", OK, "git is not installed, skipped")
+
+    if result.returncode not in (0, 1):
+        return DoctorCheck("wip marker", OK, "could not check git-tracked files for the wip marker")
+
+    files = [line for line in result.stdout.splitlines() if line.strip()]
+    if not files:
+        return DoctorCheck("wip marker", OK, "no git-tracked file contains the wip marker")
+
+    names = ", ".join(files)
+    return DoctorCheck(
+        "wip marker",
+        WARN,
+        f"{len(files)} git-tracked file(s) contain '{pause_module.WIP_MARKER}': {names}",
+        "Try: remove the marker before committing — it was likely left in by accident.",
+    )
+
+
 def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
     """Every diagnostic check for the project at `root`, in a fixed order."""
     config, config_check = _load_config_for_doctor(root)
@@ -162,6 +214,8 @@ def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
     ]
     checks.extend(_check_tool(tool) for tool in OPTIONAL_TOOLS)
     checks.append(_check_ghost_patches(root))
+    checks.append(_check_pause(root))
+    checks.append(_check_wip_marker(root))
     return tuple(checks)
 
 
