@@ -27,6 +27,7 @@ import fnmatch
 import subprocess
 from pathlib import Path
 
+from shadowci.baseline import current_baseline_ref
 from shadowci.classification import FailureClassification
 from shadowci.events import ChangeSet, CheckResult
 from shadowci.revert_check import failing_tests_by_file
@@ -65,14 +66,16 @@ def _describe_failures(check_results: tuple[CheckResult, ...]) -> str:
     return "\n".join(f"- {result.name}: {result.output.strip()}" for result in failing)
 
 
-def _diff_for_paths(worktree_root: Path, relative_paths: list[str]) -> str:
-    """`git diff HEAD` restricted to `relative_paths` — never asks git about
-    a sensitive file, so one can never show up in the resulting text."""
+def _diff_for_paths(worktree_root: Path, relative_paths: list[str], ref: str) -> str:
+    """`git diff <ref>` restricted to `relative_paths` — never asks git
+    about a sensitive file, so one can never show up in the resulting
+    text. `ref` is issue #52's baseline snapshot when one exists, `HEAD`
+    otherwise — see `shadowci.baseline.current_baseline_ref`."""
     if not relative_paths:
         return ""
     try:
         result = subprocess.run(
-            ["git", "diff", "HEAD", "--", *relative_paths],
+            ["git", "diff", ref, "--", *relative_paths],
             cwd=worktree_root,
             capture_output=True,
             text=True,
@@ -129,7 +132,12 @@ def _shared_context(
     changed_contents = ""
     test_contents = ""
     if worktree_root is not None:
-        diff = _diff_for_paths(worktree_root, visible_relative_paths)
+        ref = (
+            current_baseline_ref(worktree_root, project_root)
+            if project_root is not None
+            else "HEAD"
+        )
+        diff = _diff_for_paths(worktree_root, visible_relative_paths, ref)
         changed_contents = _file_contents_section(worktree_root, visible_relative_paths)
         test_contents = _file_contents_section(
             worktree_root,

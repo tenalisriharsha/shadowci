@@ -22,10 +22,22 @@ deleted files before anything is checked. A change set that only exists
 because of the git operation itself (nothing in it is actually
 uncommitted) triggers no checks and no model call; ShadowCI just prints
 `rebaselined shadow worktree to <sha>`. This keeps "the user's own edit" —
-the shadow's `git diff HEAD`, used by the revert check below — from ever
-including work you already committed. While a rebase, merge, cherry-pick,
-or bisect is in progress, syncing and checks are held back entirely until
-it's over.
+the shadow's diff against the current baseline, used by the revert check
+below — from ever including work you already committed. While a rebase,
+merge, cherry-pick, or bisect is in progress, syncing and checks are held
+back entirely until it's over.
+
+That baseline isn't always `HEAD`, either. A long session with no commit
+in between can still contain several finished, already-checked edits, and
+comparing every one of them against the same last commit folds the
+earlier ones into whichever edit is being checked now. So once a change
+set's checks all pass, ShadowCI snapshots the shadow worktree's current
+state as the new baseline — a plain commit object, never checked out or
+pointed to by any branch, with its sha saved under `.shadowci/`. A failing
+run never moves it. From then on "the user's own edit" means "since that
+snapshot", not "since the last commit" — until the shadow worktree exists
+at all, or before the very first green run, it's still exactly `HEAD`.
+`shadowci doctor` reports which one is currently in use.
 
 LLM access is pluggable — a scripted deterministic policy for tests and CI,
 headless `claude -p`, or a local model server (Ollama-compatible) — so the
@@ -59,11 +71,12 @@ show it's wanted. `shadowci signals` shows the running tally and the
 policy's current verdict for each kind of fix.
 
 Before any of that, ShadowCI checks whether the proposed fix would put
-back lines from your own uncommitted edit. The shadow worktree's `git diff
-HEAD`, taken before the fix is built, *is* that edit, so this is a
-deterministic comparison, not a model guess. When the failing check is a
-crash (a `SyntaxError`/`NameError`/`ImportError`/collection error — see
-issue #36) restoring those lines is simply correct, so nothing changes.
+back lines from your own uncommitted edit. The shadow worktree's diff
+against the current baseline (see above), taken before the fix is built,
+*is* that edit, so this is a deterministic comparison, not a model guess.
+When the failing check is a crash (a
+`SyntaxError`/`NameError`/`ImportError`/collection error — see issue #36)
+restoring those lines is simply correct, so nothing changes.
 Otherwise, if the fix reverts your edit *and* ShadowCI can deterministically
 rewrite the failing test to match your new behavior instead (today: a
 `pytest.raises(...)` block that no longer raises), it saves both as
@@ -136,11 +149,13 @@ part of "the user's own edit".
 
 `shadowci doctor` checks whether ShadowCI can actually work in the current
 project — is it a git repository, can `shadowci.toml` be read, does the
-shadow worktree exist, does its `HEAD` still match the live tree's, does
-the configured provider answer (a real, 30-second `claude -p` call for
-`claude-cli`), are pytest/mypy/ruff importable, and has any saved ghost
-patch gone stale — and prints one `OK`/`WARN`/`FAIL` line per check plus a
-`Try:` hint for anything that isn't `OK`. `doctor --fix` applies the fixes
+shadow worktree exist, does its `HEAD` still match the live tree's, which
+baseline the revert check and model prompts are currently diffing against
+(see above), does the configured provider answer (a real, 30-second
+`claude -p` call for `claude-cli`), are pytest/mypy/ruff importable, and
+has any saved ghost patch gone stale — and prints one `OK`/`WARN`/`FAIL`
+line per check plus a `Try:` hint for anything that isn't `OK`. `doctor
+--fix` applies the fixes
 that are always safe (recreating a missing shadow worktree, rebaselining a
 stale one, discarding stale ghost patches) without ever touching a project
 source file.
@@ -289,9 +304,10 @@ times by hand.
 ![shadowci test suite passing](docs/screenshots/09-test-suite.png)
 
 **`shadowci doctor`** — diagnoses whether ShadowCI can actually work in
-this project (git repo, config, shadow worktree, the configured provider,
-pytest/mypy/ruff, stale ghost patches) and prints a `Try:` fix for
-anything that isn't `OK`; here the project is healthy.
+this project (git repo, config, shadow worktree, which baseline is in
+use, the configured provider, pytest/mypy/ruff, stale ghost patches) and
+prints a `Try:` fix for anything that isn't `OK`; here the project is
+healthy.
 
 ![shadowci doctor reporting a healthy project](docs/screenshots/19-doctor.png)
 
@@ -377,8 +393,9 @@ ShadowCI's planned feature set is complete and fully tested (313 tests):
   `shadowci apply-ghost` applies to the live tree in one command, rebasing
   onto whatever's changed there since.
 - Revert check: before saving a fix, ShadowCI compares it against the
-  user's own uncommitted edit (the shadow worktree's `git diff HEAD`). For
-  a non-crash failure, a fix that puts that edit back is saved as a
+  user's own uncommitted edit (the shadow worktree's diff against the
+  current baseline — `HEAD`, or a later snapshot; see issue #52 below).
+  For a non-crash failure, a fix that puts that edit back is saved as a
   two-option question (`kind: "question"`, sharing a `group` id) instead
   of a silent fix whenever a matching test rewrite can also be verified;
   `apply-ghost <digest>` applies the chosen option and retires its sibling
@@ -428,8 +445,10 @@ ShadowCI's planned feature set is complete and fully tested (313 tests):
   no human in the loop.
 - `shadowci doctor`: diagnoses whether ShadowCI can work in this project
   (git repo, config, shadow worktree, whether its `HEAD` matches the live
-  tree's, configured provider, pytest/mypy/ruff, stale ghost patches, an
-  active pause, a committed wip marker), printing `OK`/`WARN`/`FAIL` plus a
+  tree's, which baseline the revert check and model prompts are diffing
+  against (issue #52), configured provider, pytest/mypy/ruff, stale ghost
+  patches, an active pause, a committed wip marker), printing
+  `OK`/`WARN`/`FAIL` plus a
   `Try:` fix command for anything that isn't `OK`; `doctor --fix` applies
   the fixes that are always safe (recreating a missing shadow worktree,
   rebaselining a stale one, discarding stale ghost patches) without ever
@@ -450,9 +469,29 @@ ShadowCI's planned feature set is complete and fully tested (313 tests):
   (nothing in it is genuinely uncommitted) triggers no checks and no model
   call. While a rebase, merge, cherry-pick, or bisect is in progress on the
   live tree, syncing and checks are held back until it's over. This is
-  what keeps a committed feature from ever showing up in the shadow's `git
-  diff HEAD` — and therefore from ever being treated as "the user's own
-  edit" by the #37 revert check or the #39 `INTENTIONAL:` flow.
+  what keeps a committed feature from ever showing up in the shadow's
+  diff against the current baseline — and therefore from ever being
+  treated as "the user's own edit" by the #37 revert check or the #39
+  `INTENTIONAL:` flow.
+- Baseline snapshot (issue #52): `HEAD` on its own only ever moves on a
+  commit, so a long session with several finished, already-checked edits
+  but no commit between them still compared every one of them against
+  the same last commit — folding an earlier, unrelated edit into "the
+  user's own edit" for whichever one is being checked now, and showing it
+  to the model as part of the current diff. Once a change set's checks
+  all pass, `pipeline.run_checks_and_maybe_escalate` now snapshots the
+  shadow worktree's current state as the new baseline: a plain commit
+  object built through a throwaway index (`git read-tree` + `git add -A`
+  + `git write-tree`, never touching the shadow's real index) and
+  `commit-tree`d on top of its `HEAD` — never checked out, never pointed
+  to by a branch or ref — with its sha saved to `.shadowci/baseline_sha`.
+  A failing run's checks never reach that line, so it never advances the
+  baseline. `revert_check.diff_head`/`diff_head_reversed` and
+  `providers.prompts`'s own diff (`shadowci.baseline.current_baseline_ref`)
+  diff against that snapshot once one exists and its commit object is
+  still valid, falling back to `HEAD` for a project with no snapshot yet
+  (including every project from before this fix). `shadowci doctor`
+  reports which one is currently in use.
 - Reject reasons and pausing (issue #40): `reject-ghost --reason
   intentional-change` says the patch itself was fine and the reject was
   because your own uncommitted edit was deliberate — that reason is
