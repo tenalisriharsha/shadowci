@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -44,6 +45,134 @@ from shadowci.signals import SignalStore
 
 GHOST_PATCH_DIRNAME = ".shadowci/ghost"
 SIGNALS_FILENAME = ".shadowci/signals.json"
+
+# Issue #53: while any of these exist in the live tree's git dir, a rebase,
+# merge, cherry-pick or bisect is still in progress — the live tree is
+# mid-operation, not mid-edit, so the shadow must not be synced, rebaselined,
+# or checked until it's over.
+_IN_PROGRESS_GIT_MARKERS = (
+    ("rebase-merge", "a rebase is in progress"),
+    ("rebase-apply", "a rebase is in progress"),
+    ("MERGE_HEAD", "a merge is in progress"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick is in progress"),
+    ("BISECT_LOG", "a bisect is in progress"),
+)
+
+
+def _git_dir(root: Path) -> Path | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-dir"], cwd=root, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        return None
+    git_dir = Path(result.stdout.strip())
+    return git_dir if git_dir.is_absolute() else root / git_dir
+
+
+def in_progress_git_operation(root: Path) -> str | None:
+    """A human-readable description of a rebase/merge/cherry-pick/bisect in
+    progress in `root`, or `None`. See `_IN_PROGRESS_GIT_MARKERS`."""
+    git_dir = _git_dir(root)
+    if git_dir is None:
+        return None
+    for marker, description in _IN_PROGRESS_GIT_MARKERS:
+        if (git_dir / marker).exists():
+            return description
+    return None
+
+
+def _head_sha(path: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _live_dirty_relative_paths(root: Path) -> set[str]:
+    """Every path `git ls-files` reports as modified/untracked/deleted in
+    the live tree right now — the genuinely uncommitted paths."""
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--modified", "--others", "--deleted", "--exclude-standard"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {part for part in result.stdout.split("\0") if part}
+
+
+def ensure_mirrored_at_start(worktree: ShadowWorktree, config: ShadowCIConfig) -> None:
+    """Bring the shadow worktree in line with the live tree once, before any
+    polling begins (issue #53): creates it if missing, then rebaselines it
+    unconditionally so a change made while nothing was watching is already
+    mirrored. A no-op while a rebase/merge/cherry-pick/bisect is in progress
+    on the live tree — the first change set ready once it ends will trigger
+    the same rebaseline via `sync_shadow_for_changeset`."""
+    if in_progress_git_operation(config.project_root) is not None:
+        return
+    worktree.ensure_created()
+    worktree.rebaseline()
+
+
+@dataclass(frozen=True)
+class MirrorSyncResult:
+    """What happened when the shadow was brought in line with the live tree
+    for one ready change set (issue #53)."""
+
+    skipped_in_progress: str | None = None
+    rebaselined_to: str | None = None  # short live sha, if a rebaseline happened
+    git_only_change: bool = False
+    touched: tuple[Path, ...] = ()
+
+
+def sync_shadow_for_changeset(
+    changeset: ChangeSet, worktree: ShadowWorktree, config: ShadowCIConfig
+) -> MirrorSyncResult:
+    """Keep the shadow worktree mirrored for one ready change set.
+
+    Only ever spawns git to check `HEAD` when a change set is actually
+    ready — never on an idle poll cycle. If the live tree's `HEAD` has
+    moved since the shadow was last rebaselined (a commit, pull, checkout,
+    or rebase), the shadow is rebaselined now; if every path in this change
+    set turns out to exactly match the new `HEAD` (the change set exists
+    only because of that git operation, not a user edit), the caller must
+    not run checks or escalate for it.
+    """
+    in_progress = in_progress_git_operation(config.project_root)
+    if in_progress is not None:
+        return MirrorSyncResult(skipped_in_progress=in_progress)
+
+    live_sha = _head_sha(config.project_root)
+    shadow_sha = _head_sha(worktree.path) if worktree.exists() else None
+
+    rebaselined_to: str | None = None
+    git_only_change = False
+    if live_sha is not None and live_sha != shadow_sha:
+        worktree.rebaseline()
+        rebaselined_to = live_sha[:10]
+
+        dirty = _live_dirty_relative_paths(config.project_root)
+        changed_relative: set[str] = set()
+        for path in changeset.paths:
+            try:
+                changed_relative.add(
+                    path.resolve().relative_to(config.project_root.resolve()).as_posix()
+                )
+            except ValueError:
+                pass
+        git_only_change = changed_relative.isdisjoint(dirty)
+
+    touched: tuple[Path, ...] = ()
+    if not git_only_change:
+        touched = tuple(worktree.sync(list(changeset.events)))
+
+    return MirrorSyncResult(
+        rebaselined_to=rebaselined_to,
+        git_only_change=git_only_change,
+        touched=touched,
+    )
 
 
 def ghost_patch_dir(root: Path) -> Path:
