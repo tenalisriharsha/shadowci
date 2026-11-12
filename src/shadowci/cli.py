@@ -471,10 +471,19 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
 
     for result in report.results:
         name = result.scenario.session.name
-        expectation = "bug" if result.scenario.bug_expected else "clean"
-        if result.scenario.bug_expected:
+        if result.scenario.expected_outcome == "ask":
+            expectation = "ask"
+            if result.false_interruption:
+                verdict = "FALSE INTERRUPTION"
+            elif result.asked:
+                verdict = "QUESTION (correct)"
+            else:
+                verdict = "QUESTION (missed)"
+        elif result.scenario.bug_expected:
+            expectation = "bug"
             verdict = "DETECTED" if result.true_positive else "MISSED"
         else:
+            expectation = "clean"
             verdict = "FALSE INTERRUPTION" if result.false_interruption else "SILENT (correct)"
         latency = (
             f", latency={result.detection_latency_seconds:.3f}s"
