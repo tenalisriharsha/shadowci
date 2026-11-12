@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from shadowci.baseline import advance_baseline, current_baseline_ref
 from shadowci.checks.suite import build_check_runners, run_checks
 from shadowci.classification import FailureClass, classify_failure
 from shadowci.config import ShadowCIConfig
@@ -410,6 +411,10 @@ def run_checks_and_maybe_escalate(
 
     failing = tuple(result for result in results if not result.passed)
     if not failing:
+        # Issue #52: this change set's checks are all green, so it becomes
+        # the new baseline for the revert check and model prompts — a
+        # failing run below never reaches this line, so it never moves it.
+        advance_baseline(worktree.path, config.project_root)
         return PipelineOutcome(check_results=results, failing_checks=failing)
 
     # Issue #40: "this is mid-feature, don't judge it yet" — a project-wide
@@ -471,8 +476,13 @@ def run_checks_and_maybe_escalate(
     # case — the deterministic stand-in is the exact inverse of the user's
     # own uncommitted edit, i.e. the fix that puts it back.
     intentional_reply = is_intentional_reply(escalation.proposed_fix)
-    user_diff = diff_head(worktree.path)
-    fix_diff = diff_head_reversed(worktree.path) if intentional_reply else escalation.proposed_fix
+    baseline_ref = current_baseline_ref(worktree.path, config.project_root)
+    user_diff = diff_head(worktree.path, baseline_ref)
+    fix_diff = (
+        diff_head_reversed(worktree.path, baseline_ref)
+        if intentional_reply
+        else escalation.proposed_fix
+    )
 
     # Issue #37: a fix that puts back the user's own edit, for a non-crash
     # failure, must not be saved as a silent "verified fix" — unless we
@@ -542,6 +552,7 @@ def run_checks_and_maybe_escalate(
             patch,
             update_test_patch,
             failure_class,
+            baseline_ref,
         )
         return PipelineOutcome(
             check_results=results,
@@ -589,13 +600,16 @@ def _format_named_list(names: list[str], limit: int = 3) -> str:
     return ", ".join(shown[:-1]) + f" and {shown[-1]}"
 
 
-def _changed_name(changeset: ChangeSet, worktree: ShadowWorktree, user_diff: str) -> str:
-    """Issue #49: the real function(s) the user edited — from `git diff
-    HEAD`'s changed lines, not the changed file's stem — falling back to
-    the file name (no trailing "()") when no function body was touched
-    (a module-level edit). `user_diff` must be the diff captured before
-    any proposed fix was applied to the shadow worktree."""
-    function_names = changed_function_names(worktree.path, user_diff)
+def _changed_name(
+    changeset: ChangeSet, worktree: ShadowWorktree, user_diff: str, baseline_ref: str = "HEAD"
+) -> str:
+    """Issue #49: the real function(s) the user edited — from `user_diff`'s
+    changed lines, not the changed file's stem — falling back to the file
+    name (no trailing "()") when no function body was touched (a
+    module-level edit). `user_diff` must be the diff captured before any
+    proposed fix was applied to the shadow worktree, and `baseline_ref`
+    (issue #52) the same ref it was diffed against."""
+    function_names = changed_function_names(worktree.path, user_diff, baseline_ref)
     if function_names:
         return _format_named_list([f"{name}()" for name in function_names])
     return changeset.paths[0].stem if changeset.paths else "the module"
@@ -620,6 +634,7 @@ def _save_question(
     keep_old_behavior: GhostPatch,
     update_test: GhostPatch,
     failure_class: str | None = None,
+    baseline_ref: str = "HEAD",
 ) -> GhostQuestion:
     group = hashlib.sha1(
         (keep_old_behavior.diff + update_test.diff).encode("utf-8")
@@ -629,7 +644,7 @@ def _save_question(
     )
     update_path = save_question_patch(update_test, root, group, "update the test", failure_class)
 
-    changed_name = _changed_name(changeset, worktree, user_diff)
+    changed_name = _changed_name(changeset, worktree, user_diff, baseline_ref)
     test_name = _failing_test_name(failing)
     message = (
         f"Your change to {changed_name} broke {test_name}. "

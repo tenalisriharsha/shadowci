@@ -18,6 +18,7 @@ from pathlib import Path
 
 from shadowci import pause as pause_module
 from shadowci import pipeline
+from shadowci.baseline import current_baseline_ref
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
 from shadowci.head_check import head_sha
 from shadowci.providers import (
@@ -118,6 +119,20 @@ def _check_shadow_head(root: Path, worktree: ShadowWorktree) -> DoctorCheck:
         f"shadow worktree HEAD ({shadow[:10]}) has drifted from live HEAD ({live[:10]})",
         "Try: run `shadowci doctor --fix` (or let `shadowci watch`/`radar` rebaseline it).",
     )
+
+
+def _check_baseline(root: Path, worktree: ShadowWorktree) -> DoctorCheck:
+    """Issue #52: which baseline `diff_head`/`diff_head_reversed` and the
+    model prompts compare the shadow worktree against right now — the live
+    tree's `HEAD` until the first fully green run, a snapshot taken then
+    from then on."""
+    if not worktree.exists():
+        return DoctorCheck("baseline", OK, "no shadow worktree yet, using HEAD as the baseline")
+
+    ref = current_baseline_ref(worktree.path, root)
+    if ref == "HEAD":
+        return DoctorCheck("baseline", OK, "no snapshot yet, using HEAD as the baseline")
+    return DoctorCheck("baseline", OK, f"using snapshot {ref[:10]} as the baseline")
 
 
 def _check_provider(config: ShadowCIConfig) -> DoctorCheck:
@@ -233,6 +248,7 @@ def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
         config_check,
         _check_worktree(worktree),
         _check_shadow_head(root, worktree),
+        _check_baseline(root, worktree),
         _check_provider(config),
     ]
     checks.extend(_check_tool(tool) for tool in OPTIONAL_TOOLS)

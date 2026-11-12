@@ -72,11 +72,17 @@ def is_crash_failure(failing_checks: tuple[CheckResult, ...]) -> bool:
     return False
 
 
-def diff_head(worktree_path: Path) -> str:
-    """The shadow worktree's uncommitted changes right now — the user's
-    own edit, as long as this is called before any fix is applied."""
+def diff_head(worktree_path: Path, ref: str = "HEAD") -> str:
+    """The shadow worktree's changes since `ref` — the user's own edit, as
+    long as this is called before any fix is applied.
+
+    `ref` defaults to the literal `HEAD`, but issue #52's caller instead
+    passes `shadowci.baseline.current_baseline_ref`'s result: a snapshot
+    taken after the last fully green run, so an earlier, already-checked
+    edit with no commit separating it from this one isn't folded in.
+    """
     result = subprocess.run(
-        ["git", "diff", "HEAD"],
+        ["git", "diff", ref],
         cwd=worktree_path,
         capture_output=True,
         text=True,
@@ -85,17 +91,18 @@ def diff_head(worktree_path: Path) -> str:
     return result.stdout
 
 
-def diff_head_reversed(worktree_path: Path) -> str:
+def diff_head_reversed(worktree_path: Path, ref: str = "HEAD") -> str:
     """The exact inverse of `diff_head`: a patch that would put the
-    worktree's uncommitted edit back to HEAD's content.
+    worktree's edit back to `ref`'s content.
 
     Issue #39: when a provider declines to propose a fix (an `INTENTIONAL:`
     reply), this is the deterministic stand-in for "keep the old
     behaviour" — there's no model-authored diff to apply, but reverting the
-    user's own edit is exactly what `git diff -R HEAD` already computes.
+    user's own edit is exactly what `git diff -R <ref>` already computes.
+    See `diff_head` for what `ref` is in practice (issue #52).
     """
     result = subprocess.run(
-        ["git", "diff", "-R", "HEAD"],
+        ["git", "diff", "-R", ref],
         cwd=worktree_path,
         capture_output=True,
         text=True,
@@ -160,9 +167,9 @@ def _enclosing_function(ranges: list[tuple[int, int, str]], line: int) -> str | 
     return best[2] if best else None
 
 
-def _git_show_head(worktree_path: Path, relative: str) -> str | None:
+def _git_show_head(worktree_path: Path, relative: str, ref: str = "HEAD") -> str | None:
     result = subprocess.run(
-        ["git", "show", f"HEAD:{relative}"],
+        ["git", "show", f"{ref}:{relative}"],
         cwd=worktree_path,
         capture_output=True,
         text=True,
@@ -171,17 +178,18 @@ def _git_show_head(worktree_path: Path, relative: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-def changed_function_names(worktree_path: Path, diff_text: str) -> list[str]:
+def changed_function_names(worktree_path: Path, diff_text: str, ref: str = "HEAD") -> list[str]:
     """The name(s) of the function(s) whose *body* `diff_text` (a unified
-    `git diff HEAD`) actually adds or removes a line inside - never a
+    `git diff <ref>`) actually adds or removes a line inside - never a
     function merely shown as unchanged hunk context - in the order
     they're first touched. A diff whose changed lines fall inside no
     function body at all (a module-level edit) yields an empty list.
 
-    Each file's enclosing-function ranges are computed once from HEAD's
-    blob (for removed lines) and the worktree's current copy (for added
-    lines), then every hunk's line-by-line `+`/`-`/` ` markers are walked
-    to track exactly which old/new line numbers actually changed.
+    Each file's enclosing-function ranges are computed once from `ref`'s
+    blob (for removed lines, matching `diff_text`'s old line numbers — see
+    issue #52) and the worktree's current copy (for added lines), then
+    every hunk's line-by-line `+`/`-`/` ` markers are walked to track
+    exactly which old/new line numbers actually changed.
     """
     names: list[str] = []
     seen: set[str] = set()
@@ -195,7 +203,7 @@ def changed_function_names(worktree_path: Path, diff_text: str) -> list[str]:
             in_hunk = False
             target = line[len("+++ ") :].strip()
             relative = None if target == "/dev/null" else target.removeprefix("b/")
-            old_source = _git_show_head(worktree_path, relative) if relative else None
+            old_source = _git_show_head(worktree_path, relative, ref) if relative else None
             new_path = worktree_path / relative if relative else None
             new_source = (
                 new_path.read_text()
