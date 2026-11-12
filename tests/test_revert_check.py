@@ -268,6 +268,49 @@ def test_applying_the_update_test_option_keeps_new_behavior_and_passes_the_suite
     assert len(store.all()) == 1
 
 
+def test_provider_intentional_reply_becomes_a_question_not_a_crash(git_repo: Path):
+    """Issue #39: a provider may answer a fix request with the literal line
+    `INTENTIONAL: <reason>` instead of a diff when the failure looks like a
+    deliberate behavior change. shadowci must treat that reply the same way
+    issue #37 treats a fix that reverts the user's edit — two verified
+    options saved as a question — rather than trying to `git apply` the
+    reply as a patch and failing."""
+    (
+        module_relpath,
+        test_relpath,
+        clean_content,
+        changed_content,
+        regression_test,
+        _original_proposed_fix,
+    ) = _intentional_change_pieces()
+
+    _write(git_repo, module_relpath, clean_content)
+    _write(git_repo, test_relpath, regression_test)
+    _commit_all(git_repo, "add average() and its test")
+
+    config = _config(git_repo)
+    module_path = _write(git_repo, module_relpath, changed_content)
+    worktree, changeset = _sync(config, module_path)
+
+    outcome = pipeline.run_checks_and_maybe_escalate(
+        changeset,
+        worktree,
+        config,
+        lambda name: ScriptedProvider(
+            tests=[regression_test],
+            fixes=["INTENTIONAL: average([]) now returns 0 on purpose"],
+        ),
+    )
+
+    assert outcome.ghost_patch_error is None, outcome.ghost_patch_error
+    assert outcome.ghost_patch is None
+
+    listings = pipeline.list_ghost_patches(config.project_root)
+    kinds = [(listing.metadata or {}).get("kind") for listing in listings]
+    assert "fix" not in kinds, f"expected no kind='fix' patch, got kinds={kinds}"
+    assert kinds.count("question") == 2, f"expected exactly two questions, got kinds={kinds}"
+
+
 def test_watch_asks_instead_of_saving_a_fix_for_an_intentional_change(
     git_repo: Path, capsys
 ):

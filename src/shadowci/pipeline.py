@@ -31,7 +31,13 @@ from shadowci.ghost import (
 )
 from shadowci.interruption import InterruptionDecision, InterruptionPolicy, fingerprint_for_patch
 from shadowci.providers.base import LLMProvider
-from shadowci.revert_check import build_update_test_patch, diff_head, is_crash_failure
+from shadowci.revert_check import (
+    build_update_test_patch,
+    diff_head,
+    diff_head_reversed,
+    is_crash_failure,
+    is_intentional_reply,
+)
 from shadowci.shadow_worktree import ShadowWorktree
 from shadowci.signals import SignalStore
 
@@ -266,6 +272,7 @@ def run_checks_and_maybe_escalate(
         return PipelineOutcome(
             check_results=results, failing_checks=failing, unknown_provider_error=str(exc)
         )
+    provider.configure_prompt_context(worktree.path, config.project_root, classification)
 
     try:
         escalation_policy = EscalationPolicy(provider)
@@ -296,13 +303,21 @@ def run_checks_and_maybe_escalate(
             proposed_fix=escalation.proposed_fix,
         )
 
+    # Issue #39: the provider may decline to propose a fix at all, replying
+    # with the single line `INTENTIONAL: <reason>` when the failure looks
+    # like a deliberate behavior change. There's no diff to apply in that
+    # case — the deterministic stand-in is the exact inverse of the user's
+    # own uncommitted edit, i.e. the fix that puts it back.
+    intentional_reply = is_intentional_reply(escalation.proposed_fix)
+    fix_diff = diff_head_reversed(worktree.path) if intentional_reply else escalation.proposed_fix
+
     # Issue #37: a fix that puts back the user's own edit, for a non-crash
     # failure, must not be saved as a silent "verified fix" — unless we
     # can't actually offer a deterministic second option, in which case
     # there's nothing to ask and the normal fix flow below still applies.
     update_test_patch: GhostPatch | None = None
-    if not is_crash_failure(failing) and fix_reverts_user_change(
-        diff_head(worktree.path), escalation.proposed_fix
+    if not is_crash_failure(failing) and (
+        intentional_reply or fix_reverts_user_change(diff_head(worktree.path), escalation.proposed_fix)
     ):
         update_test_patch = build_update_test_patch(worktree, changeset, failing)
 
@@ -312,7 +327,7 @@ def run_checks_and_maybe_escalate(
             changeset,
             escalation.failing_checks,
             escalation.regression_test,
-            escalation.proposed_fix,
+            fix_diff,
         )
     except GhostPatchError as exc:
         return PipelineOutcome(
