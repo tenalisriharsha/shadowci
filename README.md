@@ -70,11 +70,19 @@ rewrite the failing test to match your new behavior instead (today: a
 independently-verified options instead of one silent fix — `kind:
 "question"` in the patch metadata, sharing one `group` id — and a message
 like `Your change to average() broke test_average. Update the test, or
-keep the old behavior?` names both digests. `shadowci ghosts` lists the
-pair labelled `[question: ...]`; `apply-ghost <digest>` applies whichever
-one you choose and retires its sibling without recording a signal for it.
-When no such rewrite is possible (most ordinary bugs), ShadowCI falls back
-to the normal fix flow — there's no real second option to offer.
+keep the old behavior?` names both digests. The rewrite never just deletes
+the `pytest.raises(...)` wrapper and leaves the bare call behind — it runs
+that call in the shadow worktree to get its real current result and
+replaces the block with `assert <call> == <value>`, and only offers the
+option at all when that value is a plain literal (a number, string, bytes,
+bool, `None`, or a list/tuple/dict/set of those) and the block is a single,
+unambiguous statement. Anything else — a non-literal result, the call still
+raising (just a different exception), or several statements in the block —
+means there's no safe rewrite, so ShadowCI falls back to the normal fix flow
+instead of asking you to accept a test that asserts nothing — there's no
+real second option to offer. `shadowci ghosts` lists the pair labelled
+`[question: ...]`; `apply-ghost <digest>` applies whichever one you choose
+and retires its sibling without recording a signal for it.
 
 To help a provider actually recognize a deliberate change instead of
 guessing from the check output alone, its prompts (issue #39) carry the

@@ -30,8 +30,11 @@ from __future__ import annotations
 
 import ast
 import difflib
+import json
 import re
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 from shadowci.checks.base import clear_bytecode_cache
@@ -141,40 +144,156 @@ def _is_pytest_raises(node: ast.With) -> bool:
     return False
 
 
-def _raises_blocks_to_unwrap(tree: ast.Module, test_names: set[str]) -> list[ast.With]:
-    blocks = []
+def _raises_blocks_by_function(
+    tree: ast.Module, test_names: set[str]
+) -> dict[str, list[ast.With]]:
+    """`{function_name: [with-blocks]}` for every `pytest.raises(...)`
+    block directly in the body of a function named in `test_names` that
+    actually has one (functions with none are left out)."""
+    by_function: dict[str, list[ast.With]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in test_names:
-            for stmt in node.body:
-                if isinstance(stmt, ast.With) and _is_pytest_raises(stmt):
-                    blocks.append(stmt)
-    return blocks
+            blocks = [
+                stmt
+                for stmt in node.body
+                if isinstance(stmt, ast.With) and _is_pytest_raises(stmt)
+            ]
+            if blocks:
+                by_function[node.name] = blocks
+    return by_function
 
 
-def _dedent_lines(lines: list[str], spaces: int) -> list[str]:
-    stripped = []
-    for line in lines:
-        if line.strip() == "":
-            stripped.append(line)
-        else:
-            stripped.append(line[spaces:] if line[:spaces].isspace() else line.lstrip())
-    return stripped
+def _single_statement_source(source: str, block: ast.With) -> str | None:
+    """The exact source text of `block`'s one and only statement, when it
+    is a bare expression statement — or None when the block holds several
+    statements (ambiguous: which one's result would the assertion even
+    be about?) or something other than an expression (no result to
+    assert)."""
+    if len(block.body) != 1:
+        return None
+    stmt = block.body[0]
+    if not isinstance(stmt, ast.Expr):
+        return None
+    return ast.get_source_segment(source, stmt)
 
 
-def _unwrap_raises_blocks(source: str, blocks: list[ast.With]) -> str:
-    """Replace each `with pytest.raises(...):` block with its own
-    (dedented) body, editing only those line ranges and leaving every
-    other line of `source` byte-for-byte untouched."""
+_PROBE_SCRIPT = """
+import ast
+import json
+import sys
+
+sys.path.insert(0, sys.argv[1])
+module_path = sys.argv[2]
+expr_source = sys.argv[3]
+output_path = sys.argv[4]
+
+namespace = {"__name__": "__shadowci_probe__", "__file__": module_path}
+
+result = {"status": "raised"}
+try:
+    with open(module_path, "r", encoding="utf-8") as handle:
+        module_source = handle.read()
+    exec(compile(module_source, module_path, "exec"), namespace)
+    value = eval(compile(expr_source, "<shadowci-probe>", "eval"), namespace)
+except BaseException:
+    result = {"status": "raised"}
+else:
+    try:
+        literal_text = repr(value)
+        if ast.literal_eval(literal_text) != value:
+            raise ValueError("value does not round-trip through repr()")
+    except Exception:
+        result = {"status": "not_literal"}
+    else:
+        result = {"status": "ok", "repr": literal_text}
+
+with open(output_path, "w", encoding="utf-8") as handle:
+    json.dump(result, handle)
+"""
+
+
+def _probe_expression(
+    worktree_path: Path, module_path: Path, expr_source: str
+) -> dict[str, str] | None:
+    """Evaluate `expr_source` in a fresh subprocess - never in this
+    process - after running `module_path`'s own module-level code (so its
+    imports are in scope) with `worktree_path` on `sys.path`.
+
+    Returns `{"status": "ok", "repr": <text>}` when the expression
+    evaluates to a value whose `repr()` round-trips through
+    `ast.literal_eval`, `{"status": "raised"}` when evaluating it raises,
+    or `{"status": "not_literal"}` when the value has no literal form.
+    `None` on any subprocess failure (timeout, crash, unreadable output) -
+    the caller treats that the same as "no option".
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        output_path = Path(tmp_dir) / "result.json"
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    _PROBE_SCRIPT,
+                    str(worktree_path),
+                    str(module_path),
+                    expr_source,
+                    str(output_path),
+                ],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.SubprocessError:
+            return None
+        try:
+            data = json.loads(output_path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or "status" not in data:
+            return None
+        return data
+
+
+def _replace_raises_blocks(source: str, rewrites: list[tuple[ast.With, str, str]]) -> str:
+    """Replace each `with pytest.raises(...):` block with a single
+    `assert <expr> == <literal>` line at the block's own indentation,
+    editing only those line ranges and leaving every other line of
+    `source` byte-for-byte untouched."""
     lines = source.splitlines(keepends=True)
-    for block in sorted(blocks, key=lambda b: b.lineno, reverse=True):
+    for block, expr_source, literal_text in sorted(
+        rewrites, key=lambda item: item[0].lineno, reverse=True
+    ):
         start = block.lineno - 1
         end = block.end_lineno
-        body_start = block.body[0].lineno - 1
-        body_end = block.body[-1].end_lineno
-        indent_diff = block.body[0].col_offset - block.col_offset
-        body_lines = _dedent_lines(lines[body_start:body_end], indent_diff)
-        lines[start:end] = body_lines
+        indent = " " * block.col_offset
+        lines[start:end] = [f"{indent}assert {expr_source} == {literal_text}\n"]
     return "".join(lines)
+
+
+def _function_has_assertion(node: ast.FunctionDef) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Assert):
+            return True
+        if isinstance(child, ast.With) and _is_pytest_raises(child):
+            return True
+    return False
+
+
+def _changed_functions_keep_assertions(source: str, function_names: set[str]) -> bool:
+    """Final safety net (acceptance #5): every function this rewrite
+    touched must still contain at least one assertion - never a bare,
+    un-asserted call."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    found = {name: False for name in function_names}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in found:
+            found[node.name] = _function_has_assertion(node)
+    return all(found.values())
 
 
 def _pytest_module_still_used(tree: ast.Module) -> bool:
@@ -205,19 +324,44 @@ def _drop_bare_pytest_import(source: str) -> str:
     return "".join(lines)
 
 
-def _rewrite_test_source(source: str, test_names: set[str]) -> str | None:
-    """A deterministic rewrite of `source` that no longer expects the
-    exception(s) `test_names` currently fail to raise, or None when no
-    such rewrite applies."""
+def _build_assertion_rewrite(
+    worktree_path: Path, test_path: Path, source: str, test_names: set[str]
+) -> str | None:
+    """A deterministic rewrite of `source` that replaces each
+    `pytest.raises(...)` block in `test_names`'s functions with
+    `assert <call> == <value>`, built from the call's real current result
+    in the shadow worktree - or None when no such rewrite can be made
+    safely: no matching block, a block with more than one statement, a
+    call that still raises, or a result with no literal form.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
-    blocks = _raises_blocks_to_unwrap(tree, test_names)
-    if not blocks:
+
+    blocks_by_function = _raises_blocks_by_function(tree, test_names)
+    if not blocks_by_function:
         return None
-    rewritten = _unwrap_raises_blocks(source, blocks)
-    return _drop_bare_pytest_import(rewritten)
+
+    rewrites: list[tuple[ast.With, str, str]] = []
+    for blocks in blocks_by_function.values():
+        for block in blocks:
+            expr_source = _single_statement_source(source, block)
+            if expr_source is None:
+                return None
+            probe = _probe_expression(worktree_path, test_path, expr_source)
+            if probe is None or probe.get("status") != "ok":
+                return None
+            literal_text = probe.get("repr")
+            if not isinstance(literal_text, str):
+                return None
+            rewrites.append((block, expr_source, literal_text))
+
+    rewritten = _replace_raises_blocks(source, rewrites)
+    rewritten = _drop_bare_pytest_import(rewritten)
+    if not _changed_functions_keep_assertions(rewritten, set(blocks_by_function)):
+        return None
+    return rewritten
 
 
 def _make_diff(relative: str, before: str, after: str) -> str:
@@ -259,7 +403,7 @@ def build_update_test_patch(
             if not test_path.is_file():
                 return None
             original = test_path.read_text()
-            rewritten = _rewrite_test_source(original, test_names)
+            rewritten = _build_assertion_rewrite(shadow_path, test_path, original, test_names)
             if rewritten is None or rewritten == original:
                 return None
             originals[test_path] = original
