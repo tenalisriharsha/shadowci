@@ -110,12 +110,14 @@ false interruptions, `reverted_user_change`, and `reverted_committed_work`
 with no human in the loop. `reverted_user_change` counts a saved, verified
 fix whose diff would put back lines the user had deliberately changed —
 the case where a confidently "verified" fix is still the wrong call
-because the edit broke an old test on purpose, exercised by the (not
-built-in) `intentional-behavior-change` scenario in
+because the edit broke an old test on purpose, exercised by the built-in
+`intentional-behavior-change` scenario in
 `shadowci.evaluation.scenarios`. Now that the pipeline asks instead of
-silently fixing that case (see above), the scenario is scored as `ask`,
-not a reverted fix — `reverted_user_change` for it reads 0. The built-in
-suite also includes `garbage-code` and `garbage-code-import-error`: edits
+silently fixing that case (see above), the scenario is scored as `ask` —
+a saved two-option question with no verified fix counts as correct,
+reported as `QUESTION (correct)`, not a reverted fix — so
+`reverted_user_change` for it reads 0. The built-in suite also includes
+`garbage-code` and `garbage-code-import-error`: edits
 that leave `calc.py` unable to even import (a `NameError`/`ImportError`,
 not a logic bug), whose correct fix happens to restore the exact lines the
 user's edit changed. They pin down the opposite case — that restoring
@@ -266,10 +268,10 @@ drops off the pending list immediately.
 ![shadowci radar after accepting a patch with the a key](docs/screenshots/16-radar-accepted.png)
 
 **`shadowci evaluate`** — the evaluation harness replays a built-in suite
-of synthetic bug-injected and clean scenarios through the real pipeline on
-a simulated clock, with no human in the loop, and reports detection
-latency, precision, accept rate, false interruptions, and
-`reverted_user_change`.
+of synthetic bug-injected, clean, and intentional-change scenarios through
+the real pipeline on a simulated clock, with no human in the loop, and
+reports detection latency, precision, accept rate, false interruptions,
+and `reverted_user_change`.
 
 ![shadowci evaluate running the built-in scenario suite](docs/screenshots/17-evaluate.png)
 

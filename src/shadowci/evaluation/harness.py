@@ -151,6 +151,7 @@ class ScenarioResult:
     action: str | None = None  # "accept", "reject", or None
     reverted_user_change: bool = False
     reverted_committed_work: bool = False
+    asked: bool = False
 
     @property
     def true_positive(self) -> bool:
@@ -301,6 +302,10 @@ def run_scenario(
             for relative, added_lines in committed_additions.items()
         )
 
+        asked = any(
+            changeset_outcome.outcome.question is not None for changeset_outcome in changesets
+        )
+
         return ScenarioResult(
             scenario=scenario,
             changesets=tuple(changesets),
@@ -309,6 +314,7 @@ def run_scenario(
             action=action,
             reverted_user_change=reverted_user_change,
             reverted_committed_work=reverted_committed_work,
+            asked=asked,
         )
 
 

@@ -426,4 +426,5 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
         garbage_code_scenario(),
         garbage_code_import_error_scenario(),
         committed_feature_then_bug_scenario(),
+        intentional_behavior_change_scenario(),
     )

@@ -29,8 +29,10 @@ def test_evaluate_save_dir_writes_scenario_json_without_running(tmp_path: Path, 
     # Issue #36 adds two crash-type scenarios (garbage-code,
     # garbage-code-import-error) to the built-in suite, growing it from 5 to 7.
     # Issue #53 adds one more (committed-feature-then-bug), growing it to 8.
-    assert len(written) == 8
+    # Issue #51 adds the intentional-behavior-change ("ask") scenario, growing it to 9.
+    assert len(written) == 9
     assert "wrote" in out
+    assert (save_dir / "intentional-behavior-change.json") in written
 
     data = json.loads(written[0].read_text())
     assert "session" in data
@@ -66,6 +68,18 @@ def test_evaluate_reports_the_garbage_code_scenarios_as_detected(capsys):
     assert exit_code == 0
     assert f"{garbage_code_scenario().session.name} [bug]: DETECTED" in out
     assert f"{garbage_code_import_error_scenario().session.name} [bug]: DETECTED" in out
+
+
+def test_evaluate_reports_the_intentional_behavior_change_scenario_as_a_correct_ask(capsys):
+    # Issue #51: the default suite must exercise the "ask" scenario and
+    # report it as a correct ask, not mislabel it as an ordinary "clean"
+    # scenario that merely stayed silent.
+    exit_code = main(["evaluate"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "intentional-behavior-change [ask]: QUESTION (correct)" in out
+    assert "reverted_user_change    : 0" in out
 
 
 def test_evaluate_repeat_reports_policy_convergence(capsys):
