@@ -177,7 +177,9 @@ class RadarEngine:
             f"check [{result.name}] {'PASS' if result.passed else 'FAIL'}"
             for result in outcome.check_results
         )
-        if outcome.unknown_provider_error is not None:
+        if outcome.paused_message is not None:
+            lines += (outcome.paused_message,)
+        elif outcome.unknown_provider_error is not None:
             lines += (f"skipping escalation: {outcome.unknown_provider_error}",)
         elif outcome.failing_checks:
             if outcome.provider_error is not None:
