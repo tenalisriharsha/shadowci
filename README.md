@@ -123,8 +123,12 @@ shadowci ghosts --clean             # remove stale ghost patches, no signal reco
 shadowci apply-ghost <patch>          # apply a verified ghost patch to the live tree (records "accept")
 shadowci apply-ghost --latest          # apply the newest ready patch without naming it
 shadowci reject-ghost <patch>           # discard a saved patch (records "reject")
+shadowci reject-ghost <patch> --reason intentional-change  # reject without it counting against the score
 shadowci ignore-ghost <patch>             # leave a saved patch unapplied (records "ignore")
 shadowci signals                           # show recorded signal history and current policy scores
+shadowci pause                               # hold back escalation to the model
+shadowci pause --for 30m                       # ...for a fixed duration, ending on its own
+shadowci resume                                  # resume escalation after a pause
 shadowci evaluate                      # replay the built-in scenario suite and report metrics
 shadowci doctor                          # diagnose whether ShadowCI can work here, and how to fix it
 shadowci doctor --fix                      # apply the safe fixes (shadow worktree, stale patches)
@@ -379,9 +383,28 @@ ShadowCI's planned feature set is complete and fully tested (190 tests):
   undo an on-purpose user edit) with no human in the loop.
 - `shadowci doctor`: diagnoses whether ShadowCI can work in this project
   (git repo, config, shadow worktree, configured provider, pytest/mypy/
-  ruff, stale ghost patches), printing `OK`/`WARN`/`FAIL` plus a `Try:` fix
-  command for anything that isn't `OK`; `doctor --fix` applies the fixes
-  that are always safe without ever touching a source file.
+  ruff, stale ghost patches, an active pause, a committed wip marker),
+  printing `OK`/`WARN`/`FAIL` plus a `Try:` fix command for anything that
+  isn't `OK`; `doctor --fix` applies the fixes that are always safe
+  without ever touching a source file.
+- Reject reasons and pausing (issue #40): `reject-ghost --reason
+  intentional-change` says the patch itself was fine and the reject was
+  because your own uncommitted edit was deliberate — that reason is
+  excluded from the interruption policy's scoring entirely instead of
+  lowering the fingerprint's score the way an ordinary reject does;
+  `--reason wrong-fix` and `--reason not-now` record why without changing
+  the scoring, and no `--reason` keeps today's behavior. `shadowci
+  signals` reports the intentional-change count separately from ordinary
+  rejects. `shadowci pause` (optionally `--for 30m`) and `shadowci resume`
+  hold back escalation to the model project-wide — `watch` still mirrors
+  files and runs checks while paused, it just doesn't call the model,
+  printing `paused: no fix will be generated (resume with: shadowci
+  resume)`; a pause with `--for` ends on its own. A `# shadowci: wip`
+  marker line in a changed file holds back escalation triggered by edits
+  to that file, with the same message and no state to expire. Both
+  `shadowci doctor` and `shadowci status` report an active pause, and
+  `doctor` warns when a git-tracked file contains the wip marker, since
+  it's easy to commit by accident.
 
 See [PROGRESS.md](PROGRESS.md) for the phase-by-phase build history and
 [DAILY_REPORT.md](DAILY_REPORT.md) for a summary of what was built, test
