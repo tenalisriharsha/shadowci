@@ -28,7 +28,8 @@ def test_evaluate_save_dir_writes_scenario_json_without_running(tmp_path: Path, 
     written = sorted(save_dir.glob("*.json"))
     # Issue #36 adds two crash-type scenarios (garbage-code,
     # garbage-code-import-error) to the built-in suite, growing it from 5 to 7.
-    assert len(written) == 7
+    # Issue #53 adds one more (committed-feature-then-bug), growing it to 8.
+    assert len(written) == 8
     assert "wrote" in out
 
     data = json.loads(written[0].read_text())

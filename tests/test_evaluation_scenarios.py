@@ -23,11 +23,14 @@ def test_built_in_scenarios_have_unique_names_and_cover_both_classes():
 
 
 def test_bug_scenarios_carry_a_regression_test_and_fix():
+    # Issue #53 adds a bug scenario with a commit *between* two edits
+    # (`committed_feature_then_bug_scenario`), so "exactly one edit" is no
+    # longer true of every bug scenario — only "at least one" is.
     for scenario in built_in_scenarios():
         if scenario.bug_expected:
             assert scenario.regression_test
             assert scenario.proposed_fix
-            assert len(scenario.session.edits) == 1
+            assert len(scenario.session.edits) >= 1
 
 
 def test_clean_scenarios_carry_no_test_or_fix():
