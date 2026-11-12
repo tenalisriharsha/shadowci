@@ -79,6 +79,33 @@ def _git_diff_head(cwd: Path) -> str:
     return result.stdout
 
 
+def _tracked_file_contents(root: Path) -> dict[str, str]:
+    """`{relative_path: content}` for every git-tracked, still-readable
+    text file in `root` right now."""
+    result = subprocess.run(
+        ["git", "ls-files"], cwd=root, check=True, capture_output=True, text=True
+    )
+    contents: dict[str, str] = {}
+    for relative in result.stdout.splitlines():
+        path = root / relative
+        if path.is_file():
+            try:
+                contents[relative] = path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+    return contents
+
+
+def _commit_live_tree(root: Path, message: str) -> None:
+    _run_git(["add", "-A"], cwd=root)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True
+    )
+    if not status.stdout.strip():
+        return  # nothing staged — a commit offset with no preceding change is a no-op
+    _run_git(["commit", "-q", "-m", message], cwd=root)
+
+
 def _init_repo(root: Path, initial_files: dict[str, str]) -> None:
     root.mkdir(parents=True, exist_ok=True)
     _run_git(["init", "-q"], cwd=root)
@@ -123,6 +150,7 @@ class ScenarioResult:
     detection_latency_seconds: float | None = None
     action: str | None = None  # "accept", "reject", or None
     reverted_user_change: bool = False
+    reverted_committed_work: bool = False
 
     @property
     def true_positive(self) -> bool:
@@ -154,7 +182,7 @@ def run_scenario(
 
         config = _build_config(root, debounce_seconds, idle_seconds)
         worktree = ShadowWorktree(config)
-        worktree.ensure_created()
+        pipeline.ensure_mirrored_at_start(worktree, config)
         detector = ChangeSetDetector(config)
 
         tests = [scenario.regression_test] if scenario.regression_test else None
@@ -164,11 +192,35 @@ def run_scenario(
             return ScriptedProvider(tests=tests, fixes=fixes)
 
         edits = sorted(scenario.session.edits, key=lambda edit: edit.offset_seconds)
+        commit_offsets = sorted(scenario.session.commits)
         bug_introduced_at = edits[0].offset_seconds if edits else 0.0
+
+        # Issue #53: committed_additions tracks, per file, the content lines
+        # introduced by a mid-session commit — the harness-level stand-in for
+        # "the user's own edit" that must never be reverted. previous_tracked
+        # is the tracked-file snapshot right before the next commit fires.
+        previous_tracked = _tracked_file_contents(root)
+        committed_additions: dict[str, set[str]] = {}
+
+        def _fire_commit() -> None:
+            nonlocal previous_tracked
+            _commit_live_tree(root, "mid-session commit")
+            after = _tracked_file_contents(root)
+            for relative, content in after.items():
+                added = set(content.splitlines()) - set(previous_tracked.get(relative, "").splitlines())
+                if added:
+                    committed_additions.setdefault(relative, set()).update(added)
+            previous_tracked = after
+
+        commit_index = 0
 
         changesets: list[ChangeSetOutcome] = []
         pending: list[FileChangeEvent] = []
         for index, edit in enumerate(edits):
+            while commit_index < len(commit_offsets) and commit_offsets[commit_index] < edit.offset_seconds:
+                _fire_commit()
+                commit_index += 1
+
             live_path = _resolve_within(root, edit.relative_path)
             if edit.kind is ChangeKind.DELETED:
                 live_path.unlink(missing_ok=True)
@@ -194,8 +246,10 @@ def run_scenario(
             if changeset is None:
                 continue
 
-            touched = worktree.sync(list(changeset.events))
-            if not touched:
+            sync_result = pipeline.sync_shadow_for_changeset(changeset, worktree, config)
+            if sync_result.skipped_in_progress is not None or sync_result.git_only_change:
+                continue
+            if not sync_result.touched:
                 continue
 
             user_diff = _git_diff_head(worktree.path)
@@ -204,6 +258,10 @@ def run_scenario(
                 changeset, worktree, config, create_provider
             )
             changesets.append(ChangeSetOutcome(detected_at=now, outcome=result, user_diff=user_diff))
+
+        while commit_index < len(commit_offsets):
+            _fire_commit()
+            commit_index += 1
 
         detected_at = next(
             (cs.detected_at for cs in changesets if cs.outcome.ghost_patch is not None),
@@ -233,6 +291,16 @@ def run_scenario(
             for changeset_outcome in changesets
         )
 
+        # Issue #53: did any line a mid-session commit introduced fail to
+        # survive the rest of the replay (the final live file no longer
+        # contains it) — the harness-level analogue of a stale shadow's
+        # diff_head_reversed wrongly reverting already-committed work.
+        final_tracked = _tracked_file_contents(root)
+        reverted_committed_work = any(
+            added_lines - set(final_tracked.get(relative, "").splitlines())
+            for relative, added_lines in committed_additions.items()
+        )
+
         return ScenarioResult(
             scenario=scenario,
             changesets=tuple(changesets),
@@ -240,6 +308,7 @@ def run_scenario(
             detection_latency_seconds=latency,
             action=action,
             reverted_user_change=reverted_user_change,
+            reverted_committed_work=reverted_committed_work,
         )
 
 
@@ -285,6 +354,10 @@ class EvaluationReport:
     @property
     def reverted_user_change(self) -> int:
         return sum(1 for result in self.results if result.reverted_user_change)
+
+    @property
+    def reverted_committed_work(self) -> int:
+        return sum(1 for result in self.results if result.reverted_committed_work)
 
     @property
     def mean_detection_latency_seconds(self) -> float | None:

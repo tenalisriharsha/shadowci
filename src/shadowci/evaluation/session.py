@@ -29,12 +29,20 @@ class RecordedEdit:
 
 @dataclass(frozen=True)
 class RecordedSession:
-    """A replayable session: the files it starts from plus its edit sequence."""
+    """A replayable session: the files it starts from plus its edit sequence.
+
+    `commits` (issue #53) are offsets, in the same units as
+    `RecordedEdit.offset_seconds`, at which the harness commits whatever is
+    on disk in the sandboxed live repo — the recorded-session analogue of
+    the user running `git commit` mid-session. Defaults to `()` so a
+    scenario JSON file saved before this field existed still loads.
+    """
 
     name: str
     initial_files: dict[str, str] = field(default_factory=dict)
     edits: tuple[RecordedEdit, ...] = ()
     description: str = ""
+    commits: tuple[float, ...] = ()
 
 
 def session_to_dict(session: RecordedSession) -> dict:
@@ -51,6 +59,7 @@ def session_to_dict(session: RecordedSession) -> dict:
             }
             for edit in session.edits
         ],
+        "commits": list(session.commits),
     }
 
 
@@ -68,6 +77,7 @@ def session_from_dict(data: dict) -> RecordedSession:
             )
             for edit in data.get("edits", [])
         ),
+        commits=tuple(float(offset) for offset in data.get("commits", ())),
     )
 
 

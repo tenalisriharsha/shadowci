@@ -361,6 +361,60 @@ def garbage_code_import_error_scenario() -> Scenario:
     )
 
 
+def committed_feature_then_bug_scenario() -> Scenario:
+    """Issue #53's reproduction, at the evaluation-harness level: a feature
+    (`double`) is added and committed, then a *separate*, uncommitted edit
+    breaks `calc.add`'s test. The commit lands strictly between the two
+    edits — if the shadow worktree's `HEAD` were ever left stale (the core
+    bug), the committed `double` lines would show up as part of "the user's
+    own edit" right alongside the real, uncommitted bug.
+    """
+    module_filename = "calc.py"
+    test_filename = "tests/test_calc.py"
+
+    base_content = "def add(a, b):\n    return a + b\n"
+    with_feature = base_content + (
+        "\n\n"
+        "def double(x):\n"
+        "    return x * 2\n"
+    )
+    buggy_with_feature = (
+        "def add(a, b):\n"
+        "    return a - b\n"
+        "\n\n"
+        "def double(x):\n"
+        "    return x * 2\n"
+    )
+    regression_test = "from calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+    proposed_fix = (
+        "--- a/calc.py\n+++ b/calc.py\n@@ -1,5 +1,5 @@\n"
+        " def add(a, b):\n-    return a - b\n+    return a + b\n"
+        " \n"
+        " \n"
+        " def double(x):\n"
+    )
+
+    session = RecordedSession(
+        name="committed-feature-then-bug",
+        description=(
+            "double() is added and committed, then a separate, uncommitted "
+            "edit flips + to - in calc.add, breaking the suite"
+        ),
+        initial_files={module_filename: base_content, test_filename: regression_test},
+        edits=(
+            RecordedEdit(module_filename, ChangeKind.MODIFIED, 0.0, with_feature),
+            RecordedEdit(module_filename, ChangeKind.MODIFIED, 1.0, buggy_with_feature),
+        ),
+        commits=(0.5,),
+    )
+    return Scenario(
+        session=session,
+        bug_expected=True,
+        regression_test=regression_test,
+        proposed_fix=proposed_fix,
+    )
+
+
 def built_in_scenarios() -> tuple[Scenario, ...]:
     """The default scenario suite the `evaluate` CLI command replays."""
     return (
@@ -371,4 +425,5 @@ def built_in_scenarios() -> tuple[Scenario, ...]:
         clean_comment_scenario(),
         garbage_code_scenario(),
         garbage_code_import_error_scenario(),
+        committed_feature_then_bug_scenario(),
     )
