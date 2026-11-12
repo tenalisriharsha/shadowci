@@ -35,8 +35,10 @@ from shadowci.pause import PAUSE_MESSAGE, current_pause, file_has_wip_marker
 from shadowci.providers.base import LLMProvider
 from shadowci.revert_check import (
     build_update_test_patch,
+    changed_function_names,
     diff_head,
     diff_head_reversed,
+    failing_tests_by_file,
     is_crash_failure,
     is_intentional_reply,
 )
@@ -469,15 +471,20 @@ def run_checks_and_maybe_escalate(
     # case — the deterministic stand-in is the exact inverse of the user's
     # own uncommitted edit, i.e. the fix that puts it back.
     intentional_reply = is_intentional_reply(escalation.proposed_fix)
+    user_diff = diff_head(worktree.path)
     fix_diff = diff_head_reversed(worktree.path) if intentional_reply else escalation.proposed_fix
 
     # Issue #37: a fix that puts back the user's own edit, for a non-crash
     # failure, must not be saved as a silent "verified fix" — unless we
     # can't actually offer a deterministic second option, in which case
     # there's nothing to ask and the normal fix flow below still applies.
+    # `user_diff` is captured above, before `builder.build()` below applies
+    # the proposed fix to the shadow worktree — after that, `git diff HEAD`
+    # would reflect the fix too (or nothing at all, if the fix reverts the
+    # user's edit), not the user's own edit in isolation.
     update_test_patch: GhostPatch | None = None
     if not is_crash_failure(failing) and (
-        intentional_reply or fix_reverts_user_change(diff_head(worktree.path), escalation.proposed_fix)
+        intentional_reply or fix_reverts_user_change(user_diff, escalation.proposed_fix)
     ):
         update_test_patch = build_update_test_patch(worktree, changeset, failing)
 
@@ -518,7 +525,14 @@ def run_checks_and_maybe_escalate(
 
     if update_test_patch is not None:
         question = _save_question(
-            changeset, config.project_root, patch, update_test_patch, failure_class
+            changeset,
+            worktree,
+            user_diff,
+            failing,
+            config.project_root,
+            patch,
+            update_test_patch,
+            failure_class,
         )
         return PipelineOutcome(
             check_results=results,
@@ -552,8 +566,47 @@ def run_checks_and_maybe_escalate(
     )
 
 
+def _format_named_list(names: list[str], limit: int = 3) -> str:
+    """Up to `limit` names joined in prose, e.g. "a() and b()" or, past
+    the limit, "a(), b(), c() and 2 more"."""
+    shown = names[:limit]
+    remaining = len(names) - len(shown)
+    if remaining > 0:
+        return ", ".join(shown) + f" and {remaining} more"
+    if len(shown) == 1:
+        return shown[0]
+    if len(shown) == 2:
+        return f"{shown[0]} and {shown[1]}"
+    return ", ".join(shown[:-1]) + f" and {shown[-1]}"
+
+
+def _changed_name(changeset: ChangeSet, worktree: ShadowWorktree, user_diff: str) -> str:
+    """Issue #49: the real function(s) the user edited — from `git diff
+    HEAD`'s changed lines, not the changed file's stem — falling back to
+    the file name (no trailing "()") when no function body was touched
+    (a module-level edit). `user_diff` must be the diff captured before
+    any proposed fix was applied to the shadow worktree."""
+    function_names = changed_function_names(worktree.path, user_diff)
+    if function_names:
+        return _format_named_list([f"{name}()" for name in function_names])
+    return changeset.paths[0].stem if changeset.paths else "the module"
+
+
+def _failing_test_name(failing: tuple[CheckResult, ...]) -> str:
+    """Issue #49: the real failing test function name(s) from pytest's
+    output, not the test file's stem."""
+    by_file = failing_tests_by_file(failing)
+    test_names = [name for _file, names in sorted(by_file.items()) for name in sorted(names)]
+    if test_names:
+        return _format_named_list(test_names)
+    return "the test"
+
+
 def _save_question(
     changeset: ChangeSet,
+    worktree: ShadowWorktree,
+    user_diff: str,
+    failing: tuple[CheckResult, ...],
     root: Path,
     keep_old_behavior: GhostPatch,
     update_test: GhostPatch,
@@ -567,11 +620,10 @@ def _save_question(
     )
     update_path = save_question_patch(update_test, root, group, "update the test", failure_class)
 
-    changed_name = changeset.paths[0].stem if changeset.paths else "the module"
-    test_files = _patch_target_files(update_test, root)
-    test_name = Path(test_files[0]).stem if test_files else "the test"
+    changed_name = _changed_name(changeset, worktree, user_diff)
+    test_name = _failing_test_name(failing)
     message = (
-        f"Your change to {changed_name}() broke {test_name}. "
+        f"Your change to {changed_name} broke {test_name}. "
         "Update the test, or keep the old behavior?"
     )
     return GhostQuestion(
