@@ -34,8 +34,10 @@ def test_bug_scenarios_carry_a_regression_test_and_fix():
 
 
 def test_clean_scenarios_carry_no_test_or_fix():
+    # "Clean" means the right outcome is silence. A scenario whose right outcome is to ask the
+    # user (an intentional behaviour change) legitimately carries the provider's scripted reply.
     for scenario in built_in_scenarios():
-        if not scenario.bug_expected:
+        if not scenario.bug_expected and scenario.expected_outcome == "silent":
             assert scenario.regression_test is None
             assert scenario.proposed_fix is None
 
@@ -63,7 +65,8 @@ def test_built_in_scenarios_carry_an_expected_outcome_matching_bug_expected():
         if scenario.bug_expected:
             assert scenario.expected_outcome == "fix"
         else:
-            assert scenario.expected_outcome == "silent"
+            # not a bug: the right outcome is silence, or a question to the user ("ask")
+            assert scenario.expected_outcome in ("silent", "ask")
 
 
 def test_scenario_without_a_saved_expected_outcome_field_still_loads_and_behaves_as_before():
