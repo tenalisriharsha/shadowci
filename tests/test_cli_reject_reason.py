@@ -41,6 +41,8 @@ def test_reject_ghost_with_intentional_change_reason_records_it(git_repo, capsys
 def test_signals_shows_intentional_change_separately_from_rejects(git_repo, capsys):
     main(["apply-ghost", str(_write_patch_with_metadata(git_repo)), str(git_repo)])
     capsys.readouterr()
+
+    (git_repo / "app.py").write_text("def add(a, b):\n    return a + b\n")
     main(["apply-ghost", str(_write_patch_with_metadata(git_repo)), str(git_repo)])
     capsys.readouterr()
 
