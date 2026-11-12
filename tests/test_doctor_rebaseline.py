@@ -80,5 +80,10 @@ def test_doctor_fix_rebaselines_a_stale_shadow_head(git_repo: Path, capsys):
     out_after = capsys.readouterr().out
 
     assert "FAIL" not in out_after
-    assert "WARN" not in out_after or "head" not in out_after.lower()
+    # Other checks may legitimately warn (mypy and ruff are optional and absent in CI); what must
+    # be gone is a warning about the shadow worktree's HEAD.
+    head_warnings = [
+        line for line in out_after.splitlines() if "WARN" in line and "head" in line.lower()
+    ]
+    assert head_warnings == []
     assert exit_code_after == 0
