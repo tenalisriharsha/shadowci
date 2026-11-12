@@ -70,10 +70,17 @@ def _new_file_diff(relative_path: Path, content: str) -> str:
     return "\n".join(header + body) + "\n"
 
 
-def _summarize(changeset: ChangeSet, failing_checks: tuple[CheckResult, ...]) -> str:
+def _summarize(
+    changeset: ChangeSet,
+    failing_checks: tuple[CheckResult, ...],
+    covering_test: str | None = None,
+) -> str:
     files = ", ".join(str(path.name) for path in changeset.paths) or "(no files)"
     checks = ", ".join(result.name for result in failing_checks) or "(none)"
-    return f"verified fix for {files} — originally failed: {checks}"
+    base = f"verified fix for {files} — originally failed: {checks}"
+    if covering_test:
+        return f"{base} — covered by existing test {covering_test}, no new test added"
+    return base
 
 
 class GhostPatchBuilder:
@@ -90,21 +97,35 @@ class GhostPatchBuilder:
         failing_checks: tuple[CheckResult, ...],
         regression_test: str,
         proposed_fix: str,
+        *,
+        covering_test: str | None = None,
     ) -> GhostPatch:
+        """`covering_test`, when given, names an existing test that already
+        fails for this exact change and will pass once `proposed_fix` is
+        applied (issue #50: the "keep old behaviour" option, which just
+        reverts source lines back to `HEAD`). In that case the model's
+        `regression_test` is not written as a new `tests/` file — the named
+        test already *is* the regression test for this patch."""
         shadow_path = self._worktree.path
-        test_relative = Path(self._tests_dir) / _ghost_test_filename(changeset, regression_test)
-        test_path = shadow_path / test_relative
+        test_relative: Path | None = None
+        test_path: Path | None = None
 
-        test_path.parent.mkdir(parents=True, exist_ok=True)
-        test_path.write_text(regression_test)
+        if covering_test is None:
+            test_relative = Path(self._tests_dir) / _ghost_test_filename(
+                changeset, regression_test
+            )
+            test_path = shadow_path / test_relative
+            test_path.parent.mkdir(parents=True, exist_ok=True)
+            test_path.write_text(regression_test)
 
         try:
-            reproduction = PytestRunner(args=[test_relative.as_posix()]).run(shadow_path)
-            if reproduction.passed:
-                raise GhostPatchError(
-                    "regression test did not reproduce the failure — refusing to "
-                    "build a ghost patch from an unverified test"
-                )
+            if test_relative is not None:
+                reproduction = PytestRunner(args=[test_relative.as_posix()]).run(shadow_path)
+                if reproduction.passed:
+                    raise GhostPatchError(
+                        "regression test did not reproduce the failure — refusing to "
+                        "build a ghost patch from an unverified test"
+                    )
 
             check = _run_git_apply(proposed_fix, shadow_path, check_only=True)
             if check.returncode != 0:
@@ -121,12 +142,13 @@ class GhostPatchBuilder:
             clear_bytecode_cache(shadow_path)
             confirmation = self._confirm_no_regressions(shadow_path)
         except GhostPatchError:
-            test_path.unlink(missing_ok=True)
+            if test_path is not None:
+                test_path.unlink(missing_ok=True)
             raise
 
         diff = self._assemble_diff(proposed_fix, test_relative, regression_test)
         evidence = EvidenceCard(
-            summary=_summarize(changeset, failing_checks),
+            summary=_summarize(changeset, failing_checks, covering_test),
             failing_test_before=regression_test,
             check_results=confirmation,
             originally_failed_checks=tuple(result.name for result in failing_checks),
@@ -146,9 +168,11 @@ class GhostPatchBuilder:
         return results
 
     def _assemble_diff(
-        self, proposed_fix: str, test_relative: Path, regression_test: str
+        self, proposed_fix: str, test_relative: Path | None, regression_test: str
     ) -> str:
         fix_diff = proposed_fix if proposed_fix.endswith("\n") else proposed_fix + "\n"
+        if test_relative is None:
+            return fix_diff
         test_diff = _new_file_diff(test_relative, regression_test)
         return fix_diff + test_diff
 
