@@ -40,7 +40,13 @@ def test_pause_with_for_creates_a_timed_pause(git_repo: Path, capsys):
 
 @pytest.mark.parametrize("bad_duration", ["bogus", "30", "-5m", "30 minutes"])
 def test_pause_with_an_invalid_for_value_is_rejected(git_repo: Path, capsys, bad_duration):
-    exit_code = main(["pause", str(git_repo), "--for", bad_duration])
+    # Python 3.10-3.12 argparse itself rejects a value that looks like a flag (``-5m``) and exits
+    # with status 2; newer versions pass it through and shadowci's own validation returns 2.
+    # Either way the user sees an error and exit status 2, and nothing is written.
+    try:
+        exit_code = main(["pause", str(git_repo), "--for", bad_duration])
+    except SystemExit as exc:
+        exit_code = exc.code
     captured = capsys.readouterr()
 
     assert exit_code == 2
