@@ -3,8 +3,9 @@
 Each check reports `OK`, `WARN`, or `FAIL` and, for anything not `OK`, a
 `fix_hint` naming the exact command that fixes it. `--fix`
 (`apply_fixes`) applies only the fixes that are always safe to make
-automatically — recreating the shadow worktree, discarding stale ghost
-patches — and never touches a project source file.
+automatically — recreating the shadow worktree, rebaselining a stale one
+(issue #53), discarding stale ghost patches — and never touches a project
+source file.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pathlib import Path
 from shadowci import pause as pause_module
 from shadowci import pipeline
 from shadowci.config import DEFAULT_CONFIG_FILENAME, ShadowCIConfig, load_config
+from shadowci.head_check import head_sha
 from shadowci.providers import (
     ClaudeCLIProvider,
     ClaudeCLIProviderError,
@@ -95,6 +97,26 @@ def _check_worktree(worktree: ShadowWorktree) -> DoctorCheck:
         FAIL,
         f"no shadow worktree at {worktree.path}",
         "Try: run `shadowci init` (or `shadowci doctor --fix`).",
+    )
+
+
+def _check_shadow_head(root: Path, worktree: ShadowWorktree) -> DoctorCheck:
+    """Issue #53: the shadow's `HEAD` never moved on its own — a commit,
+    pull, checkout or rebase on the live tree leaves it stale, and every
+    check run against it would then mix old and new files."""
+    if not worktree.exists():
+        return DoctorCheck("shadow head", OK, "no shadow worktree yet")
+
+    live = head_sha(root)
+    shadow = head_sha(worktree.path)
+    if live == shadow:
+        return DoctorCheck("shadow head", OK, "shadow worktree HEAD matches live HEAD")
+
+    return DoctorCheck(
+        "shadow head",
+        WARN,
+        f"shadow worktree HEAD ({shadow[:10]}) has drifted from live HEAD ({live[:10]})",
+        "Try: run `shadowci doctor --fix` (or let `shadowci watch`/`radar` rebaseline it).",
     )
 
 
@@ -210,6 +232,7 @@ def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
         _check_git(root),
         config_check,
         _check_worktree(worktree),
+        _check_shadow_head(root, worktree),
         _check_provider(config),
     ]
     checks.extend(_check_tool(tool) for tool in OPTIONAL_TOOLS)
@@ -221,8 +244,9 @@ def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
 
 def apply_fixes(root: Path) -> list[str]:
     """Apply only the fixes that are always safe: recreate a missing shadow
-    worktree, discard ghost patches that no longer apply. Never touches a
-    project source file."""
+    worktree, rebaseline one whose `HEAD` has drifted from the live tree's
+    (issue #53), discard ghost patches that no longer apply. Never touches
+    a project source file."""
     config, _ = _load_config_for_doctor(root)
     worktree = ShadowWorktree(config)
     applied: list[str] = []
@@ -233,6 +257,13 @@ def apply_fixes(root: Path) -> list[str]:
             applied.append(f"created shadow worktree at {worktree.path}")
         except ShadowWorktreeError as exc:
             applied.append(f"could not create shadow worktree: {exc}")
+
+    if worktree.exists() and head_sha(root) != head_sha(worktree.path):
+        try:
+            worktree.rebaseline()
+            applied.append(f"rebaselined shadow worktree to {head_sha(worktree.path)[:10]}")
+        except ShadowWorktreeError as exc:
+            applied.append(f"could not rebaseline shadow worktree: {exc}")
 
     for name in pipeline.clean_ghost_patches(root):
         applied.append(f"removed stale ghost patch: {name}")

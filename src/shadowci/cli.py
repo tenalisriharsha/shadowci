@@ -234,6 +234,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     watcher = PollingFileWatcher(config)
     detector = ChangeSetDetector(config)
     worktree = ShadowWorktree(config)
+    pipeline.ensure_mirrored_at_start(worktree, config)
 
     print(f"watching {config.project_root} (poll every {config.poll_interval_seconds}s)")
 
@@ -247,13 +248,20 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
         changeset = detector.poll()
         if changeset is not None:
-            touched = worktree.sync(list(changeset.events))
-            print(
-                f"changeset ready: {len(changeset.paths)} file(s) -> "
-                f"synced {len(touched)} into shadow worktree"
-            )
-            if not args.skip_checks:
-                _run_checks_and_maybe_escalate(changeset, worktree, config)
+            sync_result = pipeline.sync_shadow_for_changeset(changeset, worktree, config)
+            if sync_result.skipped_in_progress is not None:
+                print(f"  skipping sync: {sync_result.skipped_in_progress}")
+            elif sync_result.git_only_change:
+                print(f"rebaselined shadow worktree to {sync_result.rebaselined_to}")
+            else:
+                if sync_result.rebaselined_to is not None:
+                    print(f"rebaselined shadow worktree to {sync_result.rebaselined_to}")
+                print(
+                    f"changeset ready: {len(changeset.paths)} file(s) -> "
+                    f"synced {len(sync_result.touched)} into shadow worktree"
+                )
+                if not args.skip_checks:
+                    _run_checks_and_maybe_escalate(changeset, worktree, config)
 
         cycle += 1
         if args.max_cycles is None or cycle < args.max_cycles:
@@ -532,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument(
         "--fix",
         action="store_true",
-        help="apply the safe fixes (recreate the shadow worktree, drop stale ghost patches)",
+        help="apply the safe fixes (recreate/rebaseline the shadow worktree, drop stale ghost patches)",
     )
     doctor_parser.set_defaults(func=_cmd_doctor)
 

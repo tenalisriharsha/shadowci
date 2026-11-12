@@ -113,7 +113,8 @@ class RadarEngine:
         return self._config
 
     def ensure_worktree(self) -> Path:
-        return self._worktree.ensure_created()
+        pipeline.ensure_mirrored_at_start(self._worktree, self._config)
+        return self._worktree.path
 
     def note(self, message: str) -> RadarState:
         """Append a log entry without running a poll cycle — for instant
@@ -143,18 +144,31 @@ class RadarEngine:
         last_check_results = state.last_check_results
 
         if changeset is not None:
-            touched = self._worktree.sync(list(changeset.events))
+            sync_result = pipeline.sync_shadow_for_changeset(changeset, self._worktree, self._config)
             last_changeset = changeset
-            new_log = (
-                *new_log,
-                f"changeset ready: {len(changeset.paths)} file(s) -> synced {len(touched)}",
-            )
-            if not skip_checks:
-                outcome = pipeline.run_checks_and_maybe_escalate(
-                    changeset, self._worktree, self._config, create_provider
+            if sync_result.skipped_in_progress is not None:
+                new_log = (*new_log, f"skipping sync: {sync_result.skipped_in_progress}")
+            elif sync_result.git_only_change:
+                new_log = (*new_log, f"rebaselined shadow worktree to {sync_result.rebaselined_to}")
+            else:
+                if sync_result.rebaselined_to is not None:
+                    new_log = (
+                        *new_log,
+                        f"rebaselined shadow worktree to {sync_result.rebaselined_to}",
+                    )
+                new_log = (
+                    *new_log,
+                    (
+                        f"changeset ready: {len(changeset.paths)} file(s) -> "
+                        f"synced {len(sync_result.touched)}"
+                    ),
                 )
-                last_check_results = outcome.check_results
-                new_log = (*new_log, *self._describe_outcome(outcome))
+                if not skip_checks:
+                    outcome = pipeline.run_checks_and_maybe_escalate(
+                        changeset, self._worktree, self._config, create_provider
+                    )
+                    last_check_results = outcome.check_results
+                    new_log = (*new_log, *self._describe_outcome(outcome))
 
         recent_events = (*state.recent_events, *events)[-MAX_RECENT_EVENTS:]
 
