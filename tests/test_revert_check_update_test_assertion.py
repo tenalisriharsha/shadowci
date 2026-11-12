@@ -54,7 +54,11 @@ def _build_patch(
     (repo / "tests").mkdir(exist_ok=True)
     (repo / TEST_RELPATH).write_text(test_source)
     _run_git(["add", "-A"], repo)
-    _run_git(["commit", "-q", "-m", "add calc and its test"], repo)
+    # Callers loop over this helper with one shared repo; from the second call on the files may
+    # already match HEAD, and `git commit` would then fail with "nothing to commit".
+    nothing_staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo).returncode == 0
+    if not nothing_staged:
+        _run_git(["commit", "-q", "-m", "add calc and its test"], repo)
 
     module_path = repo / MODULE_RELPATH
     module_path.write_text(changed_module)
