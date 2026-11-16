@@ -144,7 +144,7 @@ def _shared_context(
             [path for path in visible_test_files if path not in visible_relative_paths],
         )
 
-    paths_line = ", ".join(relative_paths) or "(no files)"
+    paths_line = ", ".join(visible_relative_paths) or "(no files)"
     sections = [
         (
             "A deterministic check just failed in a shadow git worktree after "
