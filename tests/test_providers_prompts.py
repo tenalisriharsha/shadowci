@@ -101,6 +101,32 @@ def test_sensitive_files_never_appear_in_a_prompt(git_repo: Path):
         assert "old-token" not in prompt
 
 
+def test_sensitive_filenames_do_not_appear_in_the_changed_files_sentence(git_repo: Path):
+    env_file = git_repo / ".env"
+    env_file.write_text("SECRET_DB_PASSWORD=old-password\n")
+    secret_file = git_repo / "secret_keys.py"
+    secret_file.write_text("API_TOKEN = 'old-token'\n")
+    normal_file = git_repo / "app.py"
+    normal_file.write_text("def add(a, b):\n    return a + b\n")
+    _run(["add", ".env", "secret_keys.py", "app.py"], cwd=git_repo)
+    _run(["commit", "-q", "-m", "add sensitive and normal files"], cwd=git_repo)
+
+    env_file.write_text("SECRET_DB_PASSWORD=supersecretvalue123\n")
+    secret_file.write_text("API_TOKEN = 'leak-this-token-9999'\n")
+    normal_file.write_text("def add(a, b):\n    return a + b + 1\n")
+
+    changeset = _changeset(env_file, secret_file, normal_file)
+
+    fix_prompt = build_fix_prompt(changeset, _FAILING_CHECKS, git_repo, git_repo)
+    test_prompt = build_test_prompt(changeset, _FAILING_CHECKS, git_repo, git_repo)
+
+    for prompt in (fix_prompt, test_prompt):
+        changed_files_sentence = prompt.splitlines()[0]
+        assert ".env" not in changed_files_sentence
+        assert "secret_keys.py" not in changed_files_sentence
+        assert "app.py" in changed_files_sentence
+
+
 def test_prompt_builds_without_a_diff_for_a_brand_new_file(git_repo: Path):
     new_file = git_repo / "new_module.py"
     new_file.write_text("def greet():\n    return 'hi'\n")
