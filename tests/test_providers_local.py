@@ -36,6 +36,36 @@ def test_write_regression_test_returns_model_response(monkeypatch):
     assert test_source == "def test_x(): ..."
 
 
+def test_write_regression_test_strips_markdown_code_fence(monkeypatch):
+    fenced = "```python\ndef test_x():\n    assert True\n```"
+    body = json.dumps({"response": fenced}).encode("utf-8")
+
+    def _fake_urlopen(request, timeout):
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    provider = LocalModelProvider()
+
+    test_source = provider.write_regression_test(_CHANGESET, _FAILING)
+
+    assert test_source == "def test_x():\n    assert True"
+
+
+def test_propose_fix_strips_markdown_code_fence(monkeypatch):
+    fenced = "```diff\n--- a/x\n+++ b/x\n```"
+    body = json.dumps({"response": fenced}).encode("utf-8")
+
+    def _fake_urlopen(request, timeout):
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    provider = LocalModelProvider()
+
+    fix = provider.propose_fix(_CHANGESET, _FAILING)
+
+    assert fix == "--- a/x\n+++ b/x"
+
+
 def test_propose_fix_sends_the_configured_model_and_prompt(monkeypatch):
     captured: dict = {}
 
