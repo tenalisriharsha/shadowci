@@ -711,6 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    sys.stdout.reconfigure(line_buffering=True)
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
