@@ -11,6 +11,10 @@ is only promoted to a stable `ChangeSet` once three conditions all hold:
 3. **Syntax/compile check** — every still-existing Python file touched by
    the buffer parses cleanly. A file that fails to parse means the edit is
    still mid-flight; the buffer keeps accumulating instead of promoting.
+
+The syntax check is applied per file, not to the buffer as a whole: a file
+that stays broken is held back on its own, but it never blocks promotion of
+other, unrelated files that already parse cleanly.
 """
 
 from __future__ import annotations
@@ -53,15 +57,23 @@ class ChangeSetDetector:
             return None
         if elapsed < self._config.idle_seconds:
             return None
-        if not self._all_syntax_valid():
+
+        ready, blocked = self._partition_by_syntax_validity()
+        if not ready:
             return None
 
-        changeset = ChangeSet(events=tuple(self._buffer), detected_at=now)
-        self._buffer = []
-        self._last_event_time = None
+        changeset = ChangeSet(events=tuple(ready), detected_at=now)
+        self._buffer = blocked
+        if not blocked:
+            self._last_event_time = None
         return changeset
 
-    def _all_syntax_valid(self) -> bool:
+    def _partition_by_syntax_validity(
+        self,
+    ) -> tuple[list[FileChangeEvent], list[FileChangeEvent]]:
+        """Split the buffer into events ready to promote and events still
+        blocked by their own file's syntax error."""
+        broken_paths: set[Path] = set()
         checked: set[Path] = set()
         for event in self._buffer:
             if event.path in checked:
@@ -72,8 +84,17 @@ class ChangeSetDetector:
             if event.path.suffix != ".py":
                 continue
             if not self._is_valid_python(event.path):
-                return False
-        return True
+                broken_paths.add(event.path)
+
+        if broken_paths:
+            print(
+                "shadowci: holding back changeset, still broken: "
+                + ", ".join(str(path) for path in sorted(broken_paths))
+            )
+
+        ready = [event for event in self._buffer if event.path not in broken_paths]
+        blocked = [event for event in self._buffer if event.path in broken_paths]
+        return ready, blocked
 
     @staticmethod
     def _is_valid_python(path: Path) -> bool:
