@@ -39,6 +39,27 @@ from shadowci.watcher import PollingFileWatcher
 REJECT_REASONS = ("intentional-change", "wrong-fix", "not-now")
 
 
+def _ensure_gitignore_entry(root: Path, shadow_dir: Path) -> None:
+    """Make sure the shadow worktree's top-level directory is gitignored.
+
+    Without this, `shadow_dir` (a real nested git worktree) gets picked up
+    by `git add -A` as an embedded repository.
+    """
+    entry = f"{shadow_dir.parts[0]}/"
+    gitignore_path = root / ".gitignore"
+
+    if gitignore_path.exists():
+        content = gitignore_path.read_text()
+        if entry in content.splitlines():
+            return
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += f"{entry}\n"
+        gitignore_path.write_text(content)
+    else:
+        gitignore_path.write_text(f"{entry}\n")
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     root = Path(args.path).resolve()
     config_path = root / DEFAULT_CONFIG_FILENAME
@@ -56,6 +77,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"{config_path} already exists, leaving it alone")
 
     config = load_config(root)
+    _ensure_gitignore_entry(root, config.shadow_dir)
     try:
         worktree = ShadowWorktree(config)
         shadow_path = worktree.ensure_created()
