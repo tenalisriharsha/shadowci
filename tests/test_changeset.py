@@ -79,6 +79,25 @@ def test_deleted_file_event_skips_syntax_check(tmp_path: Path):
     assert changeset is not None
 
 
+def test_unrelated_valid_file_promotes_despite_other_file_staying_broken(tmp_path: Path):
+    broken = tmp_path / "broken.py"
+    broken.write_text("def f(:\n")  # left broken, never fixed
+    good = tmp_path / "good.py"
+    good.write_text("def g(): return 1\n")
+
+    detector = ChangeSetDetector(_config())
+    detector.add_events([FileChangeEvent(broken, ChangeKind.MODIFIED, timestamp=100.0)])
+    assert detector.poll(now=100.5) is None  # broken.py isn't done yet
+
+    # much later, an unrelated, syntactically valid file is saved
+    detector.add_events([FileChangeEvent(good, ChangeKind.MODIFIED, timestamp=200.0)])
+    changeset = detector.poll(now=200.5)
+
+    assert changeset is not None, "good.py should promote even though broken.py never recovers"
+    assert changeset.paths == (good,)
+    assert detector.pending_count == 1  # broken.py stays buffered, waiting on its own fix
+
+
 def test_new_events_reset_the_idle_window():
     detector = ChangeSetDetector(_config())
     detector.add_events([FileChangeEvent(Path("a.py"), ChangeKind.MODIFIED, timestamp=100.0)])
