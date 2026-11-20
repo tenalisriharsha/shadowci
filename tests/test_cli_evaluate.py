@@ -16,6 +16,7 @@ def test_evaluate_runs_the_built_in_suite_and_reports_metrics(capsys):
     assert "accept rate" in out
     assert "mean detection latency" in out
     assert "reverted_user_change" in out
+    assert "reverted_committed_work" in out
 
 
 def test_evaluate_save_dir_writes_scenario_json_without_running(tmp_path: Path, capsys):
@@ -80,6 +81,19 @@ def test_evaluate_reports_the_intentional_behavior_change_scenario_as_a_correct_
     assert exit_code == 0
     assert "intentional-behavior-change [ask]: QUESTION (correct)" in out
     assert "reverted_user_change    : 0" in out
+
+
+def test_evaluate_reports_reverted_committed_work(capsys):
+    # Issue #62: the harness has computed EvaluationReport.reverted_committed_work
+    # since issue #53 (see tests/test_evaluation_commit_step.py), but the CLI's
+    # suite-report path never printed it, so the metric the README documents
+    # for the committed-feature-then-bug scenario never reached users.
+    exit_code = main(["evaluate"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "reverted_committed_work" in out
+    assert "reverted_committed_work : 0" in out
 
 
 def test_evaluate_repeat_reports_policy_convergence(capsys):
