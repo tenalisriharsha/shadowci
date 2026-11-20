@@ -1,5 +1,6 @@
 import io
 import json
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -86,6 +87,33 @@ def test_propose_fix_sends_the_configured_model_and_prompt(monkeypatch):
 
 
 def test_unreachable_server_raises_provider_error(monkeypatch):
+    def _fake_urlopen(request, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    provider = LocalModelProvider()
+
+    with pytest.raises(LocalModelProviderError, match="unreachable"):
+        provider.write_regression_test(_CHANGESET, _FAILING)
+
+
+def test_http_error_from_reachable_server_reports_status_not_unreachable(monkeypatch):
+    def _fake_urlopen(request, timeout):
+        fp = io.BytesIO(b'{"error":"model \\"qwen2.5-coder\\" not found, try pulling it first"}')
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, fp)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    provider = LocalModelProvider()
+
+    with pytest.raises(LocalModelProviderError) as excinfo:
+        provider.write_regression_test(_CHANGESET, _FAILING)
+
+    message = str(excinfo.value)
+    assert "404" in message
+    assert "unreachable" not in message
+
+
+def test_connection_failure_still_raises_unreachable(monkeypatch):
     def _fake_urlopen(request, timeout):
         raise OSError("connection refused")
 

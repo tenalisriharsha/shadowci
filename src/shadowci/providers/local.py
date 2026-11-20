@@ -10,6 +10,7 @@ a model server actually running.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -90,6 +91,11 @@ class LocalModelProvider(LLMProvider):
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
                 body = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:200]
+            raise LocalModelProviderError(
+                f"local model server at {self._base_url} returned HTTP {exc.code}: {detail!r}"
+            ) from exc
         except OSError as exc:
             raise LocalModelProviderError(
                 f"local model server unreachable at {self._base_url}"
