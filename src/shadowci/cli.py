@@ -527,6 +527,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         f"{_format_metric(report.mean_detection_latency_seconds, suffix='s')}"
     )
     print(f"reverted_user_change    : {report.reverted_user_change}")
+    print(f"reverted_committed_work : {report.reverted_committed_work}")
     return 0
 
 
