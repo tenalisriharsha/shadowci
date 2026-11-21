@@ -45,6 +45,7 @@ from shadowci.revert_check import (
 )
 from shadowci.shadow_worktree import ShadowWorktree
 from shadowci.signals import SignalStore
+from shadowci.test_guard import test_files_touched_by_diff
 
 GHOST_PATCH_DIRNAME = ".shadowci/ghost"
 SIGNALS_FILENAME = ".shadowci/signals.json"
@@ -483,6 +484,28 @@ def run_checks_and_maybe_escalate(
         if intentional_reply
         else escalation.proposed_fix
     )
+
+    # Issue #71: the model's proposed fix may only change non-test files —
+    # verification only confirms the full suite passes afterward, so a fix
+    # that also deletes, weakens, skips, or disables collection for the
+    # test that would catch it passes that check by construction. Checked
+    # on the model's raw reply, not `fix_diff`: an `INTENTIONAL:` reply's
+    # deterministic revert (built below from the user's own edit, which
+    # may legitimately touch a test file the user themselves edited) is
+    # never a diff, so it never matches here. Refused before the
+    # `GhostPatchBuilder.build()` call below ever verifies anything, and
+    # with no further model call.
+    touched_test_files = test_files_touched_by_diff(escalation.proposed_fix)
+    if touched_test_files:
+        named = _format_named_list(sorted(touched_test_files))
+        return PipelineOutcome(
+            check_results=results,
+            failing_checks=failing,
+            provider_name=provider.name,
+            regression_test=escalation.regression_test,
+            proposed_fix=escalation.proposed_fix,
+            ghost_patch_error=f"proposed fix edits {named}; a fix may not change existing tests",
+        )
 
     # Issue #37: a fix that puts back the user's own edit, for a non-crash
     # failure, must not be saved as a silent "verified fix" — unless we
