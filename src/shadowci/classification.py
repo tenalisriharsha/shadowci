@@ -31,6 +31,7 @@ from enum import Enum
 from pathlib import Path
 
 from shadowci.checks.targeted import find_targeted_tests
+from shadowci.config import DEFAULT_CHECK_TIMEOUT_SECONDS
 from shadowci.events import ChangeSet, CheckResult
 from shadowci.head_check import node_ids_passed_at_head
 from shadowci.revert_check import failing_tests_by_file
@@ -66,6 +67,7 @@ def classify_failure(
     worktree_path: Path,
     project_root: Path,
     tests_dir: str = "tests",
+    timeout_seconds: float = DEFAULT_CHECK_TIMEOUT_SECONDS,
 ) -> FailureClassification:
     by_file = failing_tests_by_file(failing_checks)
     if not by_file:
@@ -81,7 +83,7 @@ def classify_failure(
     node_ids = tuple(
         f"{file}::{name}" for file, names in sorted(by_file.items()) for name in sorted(names)
     )
-    head_status = node_ids_passed_at_head(project_root, node_ids)
+    head_status = node_ids_passed_at_head(project_root, node_ids, timeout_seconds=timeout_seconds)
     if node_ids and not any(head_status.get(node_id, False) for node_id in node_ids):
         return FailureClassification(failure_class=FailureClass.PRE_EXISTING)
 

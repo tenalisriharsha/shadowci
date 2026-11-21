@@ -165,6 +165,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def _print_check_result(result: CheckResult) -> None:
+    if result.timed_out:
+        print(f"  check [{result.name}] TIMEOUT after {result.duration_seconds:.0f}s")
+        print(
+            "  Try: a test may hang; raise check_timeout_seconds in shadowci.toml "
+            "if your suite is just slow"
+        )
+        return
     status = "PASS" if result.passed else "FAIL"
     print(f"  check [{result.name}] {status} ({result.duration_seconds:.2f}s)")
     if not result.passed and result.output.strip():
@@ -181,6 +188,11 @@ def _run_checks_and_maybe_escalate(
         _print_check_result(result)
 
     if not outcome.failing_checks:
+        return
+
+    if any(result.timed_out for result in outcome.failing_checks):
+        # Issue #72: a timed-out check is not a bug — the per-check TIMEOUT
+        # line above already said so, and there's nothing to escalate.
         return
 
     if outcome.paused_message is not None:

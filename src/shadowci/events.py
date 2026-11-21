@@ -58,6 +58,7 @@ class CheckResult:
     passed: bool
     output: str = ""
     duration_seconds: float = 0.0
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)

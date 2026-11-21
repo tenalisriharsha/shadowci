@@ -406,7 +406,9 @@ def run_checks_and_maybe_escalate(
     caller's module-level reference to it stays monkeypatchable in tests —
     this function reads whatever the caller currently has bound to that name.
     """
-    runners = build_check_runners(changeset, worktree.path)
+    runners = build_check_runners(
+        changeset, worktree.path, timeout_seconds=config.check_timeout_seconds
+    )
     results = run_checks(runners, worktree.path)
 
     failing = tuple(result for result in results if not result.passed)
@@ -415,6 +417,12 @@ def run_checks_and_maybe_escalate(
         # the new baseline for the revert check and model prompts — a
         # failing run below never reaches this line, so it never moves it.
         advance_baseline(worktree.path, config.project_root)
+        return PipelineOutcome(check_results=results, failing_checks=failing)
+
+    # Issue #72: a check that timed out isn't a bug — it's a test that never
+    # finished, so there's nothing yet to escalate to the model. Carry on to
+    # the next change set instead of calling a provider over a hang.
+    if any(result.timed_out for result in failing):
         return PipelineOutcome(check_results=results, failing_checks=failing)
 
     # Issue #40: "this is mid-feature, don't judge it yet" — a project-wide
@@ -428,7 +436,13 @@ def run_checks_and_maybe_escalate(
             check_results=results, failing_checks=failing, paused_message=paused_message
         )
 
-    classification = classify_failure(changeset, failing, worktree.path, config.project_root)
+    classification = classify_failure(
+        changeset,
+        failing,
+        worktree.path,
+        config.project_root,
+        timeout_seconds=config.check_timeout_seconds,
+    )
     failure_class = (
         classification.failure_class.value if classification.failure_class else None
     )
@@ -507,7 +521,7 @@ def run_checks_and_maybe_escalate(
     covering_test = _failing_test_name(failing) if update_test_patch is not None else None
 
     try:
-        builder = GhostPatchBuilder(worktree)
+        builder = GhostPatchBuilder(worktree, timeout_seconds=config.check_timeout_seconds)
         patch = builder.build(
             changeset,
             escalation.failing_checks,

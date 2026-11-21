@@ -15,16 +15,22 @@ from shadowci.checks.lint_runner import RuffRunner
 from shadowci.checks.pytest_runner import PytestRunner
 from shadowci.checks.targeted import TargetedTestRunner, find_targeted_tests
 from shadowci.checks.type_checker import MypyRunner
+from shadowci.config import DEFAULT_CHECK_TIMEOUT_SECONDS
 from shadowci.events import ChangeSet, CheckResult
 
 
 def build_check_runners(
-    changeset: ChangeSet, worktree_path: Path, tests_dir: str = "tests"
+    changeset: ChangeSet,
+    worktree_path: Path,
+    tests_dir: str = "tests",
+    timeout_seconds: float = DEFAULT_CHECK_TIMEOUT_SECONDS,
 ) -> list[CheckRunner]:
     """Choose check runners for `changeset`: targeted tests when possible, else all."""
     targets = find_targeted_tests(changeset, worktree_path, tests_dir)
     test_runner: CheckRunner = (
-        TargetedTestRunner(changeset, tests_dir) if targets else PytestRunner()
+        TargetedTestRunner(changeset, tests_dir, timeout_seconds=timeout_seconds)
+        if targets
+        else PytestRunner(timeout_seconds=timeout_seconds)
     )
     return [test_runner, MypyRunner(), RuffRunner()]
 
