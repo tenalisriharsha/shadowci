@@ -9,7 +9,9 @@ editing.
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -57,6 +59,42 @@ def run_subprocess(args: list[str], cwd: Path) -> tuple[int, str, float]:
         output = str(exc)
     duration = time.monotonic() - start
     return returncode, output, duration
+
+
+def run_subprocess_with_timeout(
+    args: list[str], cwd: Path, timeout_seconds: float
+) -> tuple[int, str, float, bool]:
+    """Like `run_subprocess`, but kills the whole process group — not just
+    the direct child — if `args` doesn't finish within `timeout_seconds`.
+
+    Runs in its own session (`start_new_session=True`) so a timed-out
+    `pytest` run's worker processes, and any grandchildren a hung test
+    itself spawned, are killed via `os.killpg` instead of being orphaned.
+    Returns (returncode, combined output, duration, timed_out).
+    """
+    start = time.monotonic()
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except FileNotFoundError as exc:
+        return 127, str(exc), time.monotonic() - start, False
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        return process.returncode, stdout + stderr, time.monotonic() - start, False
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        return process.returncode, stdout + stderr, time.monotonic() - start, True
 
 
 def is_module_missing(output: str) -> bool:

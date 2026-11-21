@@ -19,7 +19,8 @@ import re
 import sys
 from pathlib import Path
 
-from shadowci.checks.base import CheckRunner, run_subprocess
+from shadowci.checks.base import CheckRunner, run_subprocess_with_timeout
+from shadowci.config import DEFAULT_CHECK_TIMEOUT_SECONDS
 from shadowci.events import ChangeSet, CheckResult
 
 
@@ -58,9 +59,15 @@ class TargetedTestRunner(CheckRunner):
 
     name = "pytest-targeted"
 
-    def __init__(self, changeset: ChangeSet, tests_dir: str = "tests") -> None:
+    def __init__(
+        self,
+        changeset: ChangeSet,
+        tests_dir: str = "tests",
+        timeout_seconds: float = DEFAULT_CHECK_TIMEOUT_SECONDS,
+    ) -> None:
         self._changeset = changeset
         self._tests_dir = tests_dir
+        self._timeout_seconds = timeout_seconds
 
     def run(self, worktree_path: Path) -> CheckResult:
         targets = find_targeted_tests(self._changeset, worktree_path, self._tests_dir)
@@ -73,9 +80,19 @@ class TargetedTestRunner(CheckRunner):
             )
 
         relative_targets = [str(path.relative_to(worktree_path)) for path in targets]
-        returncode, output, duration = run_subprocess(
-            [sys.executable, "-m", "pytest", *relative_targets], cwd=worktree_path
+        returncode, output, duration, timed_out = run_subprocess_with_timeout(
+            [sys.executable, "-m", "pytest", *relative_targets],
+            worktree_path,
+            timeout_seconds=self._timeout_seconds,
         )
+        if timed_out:
+            return CheckResult(
+                name=self.name,
+                passed=False,
+                output=f"timed out after {self._timeout_seconds:g}s",
+                duration_seconds=duration,
+                timed_out=True,
+            )
         return CheckResult(
             name=self.name, passed=returncode == 0, output=output, duration_seconds=duration
         )

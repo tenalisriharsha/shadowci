@@ -135,6 +135,16 @@ def _check_baseline(root: Path, worktree: ShadowWorktree) -> DoctorCheck:
     return DoctorCheck("baseline", OK, f"using snapshot {ref[:10]} as the baseline")
 
 
+def _check_timeout(config: ShadowCIConfig) -> DoctorCheck:
+    """Issue #72: surface the configured `check_timeout_seconds` so a user
+    debugging a hang knows the budget without opening `shadowci.toml`."""
+    return DoctorCheck(
+        "check timeout",
+        OK,
+        f"check_timeout_seconds = {config.check_timeout_seconds:g}",
+    )
+
+
 def _check_provider(config: ShadowCIConfig) -> DoctorCheck:
     try:
         provider = create_provider(config.provider)
@@ -249,6 +259,7 @@ def run_checks(root: Path) -> tuple[DoctorCheck, ...]:
         _check_worktree(worktree),
         _check_shadow_head(root, worktree),
         _check_baseline(root, worktree),
+        _check_timeout(config),
         _check_provider(config),
     ]
     checks.extend(_check_tool(tool) for tool in OPTIONAL_TOOLS)

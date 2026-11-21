@@ -151,11 +151,11 @@ part of "the user's own edit".
 project — is it a git repository, can `shadowci.toml` be read, does the
 shadow worktree exist, does its `HEAD` still match the live tree's, which
 baseline the revert check and model prompts are currently diffing against
-(see above), does the configured provider answer (a real, 30-second
-`claude -p` call for `claude-cli`), are pytest/mypy/ruff importable, and
-has any saved ghost patch gone stale — and prints one `OK`/`WARN`/`FAIL`
-line per check plus a `Try:` hint for anything that isn't `OK`. `doctor
---fix` applies the fixes
+(see above), what `check_timeout_seconds` is configured to, does the
+configured provider answer (a real, 30-second `claude -p` call for
+`claude-cli`), are pytest/mypy/ruff importable, and has any saved ghost
+patch gone stale — and prints one `OK`/`WARN`/`FAIL` line per check plus a
+`Try:` hint for anything that isn't `OK`. `doctor --fix` applies the fixes
 that are always safe (recreating a missing shadow worktree, rebaselining a
 stale one, discarding stale ghost patches) without ever touching a project
 source file.
@@ -510,6 +510,22 @@ ShadowCI's planned feature set is complete and fully tested (313 tests):
   `shadowci doctor` and `shadowci status` report an active pause, and
   `doctor` warns when a git-tracked file contains the wip marker, since
   it's easy to commit by accident.
+- Check timeout (issue #72): every check subprocess (`pytest`/targeted
+  pytest, plus the HEAD check `head_check.py` runs for issue #38 and the
+  post-fix confirmation run inside `GhostPatchBuilder`) is killed once it
+  runs past the configurable `check_timeout_seconds` (default `60`,
+  `shadowci.toml`), so one hanging test — an infinite loop, a deadlock, a
+  hung network wait — no longer blocks `watch`/`radar` forever. The
+  subprocess runs in its own session (`start_new_session=True`) so a
+  timeout kills the whole process group with `os.killpg`, not just the
+  direct `pytest` child — its workers and any grandchild processes a hung
+  test spawned die too. A timed-out check is reported as `check [name]
+  TIMEOUT after <N>s` with a hint to raise `check_timeout_seconds` if the
+  suite is just slow, never escalates to the model (a hang isn't a bug),
+  and `watch`/`radar` carry on to the next change set. If the post-fix
+  confirmation run times out, no ghost patch is saved (`could not verify a
+  ghost patch: confirmation timed out`). `shadowci doctor` reports the
+  configured value.
 
 See [PROGRESS.md](PROGRESS.md) for the phase-by-phase build history and
 [DAILY_REPORT.md](DAILY_REPORT.md) for a summary of what was built, test

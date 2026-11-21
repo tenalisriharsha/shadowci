@@ -29,6 +29,7 @@ from shadowci.checks.lint_runner import RuffRunner
 from shadowci.checks.pytest_runner import PytestRunner
 from shadowci.checks.suite import run_checks
 from shadowci.checks.type_checker import MypyRunner
+from shadowci.config import DEFAULT_CHECK_TIMEOUT_SECONDS
 from shadowci.events import ChangeSet, CheckResult, EvidenceCard, GhostPatch
 from shadowci.shadow_worktree import ShadowWorktree
 
@@ -87,9 +88,15 @@ class GhostPatchBuilder:
     """Verifies a regression test + fix inside the shadow worktree, then
     assembles a `GhostPatch` ready to apply to the live tree."""
 
-    def __init__(self, worktree: ShadowWorktree, tests_dir: str = GHOST_TESTS_SUBDIR) -> None:
+    def __init__(
+        self,
+        worktree: ShadowWorktree,
+        tests_dir: str = GHOST_TESTS_SUBDIR,
+        timeout_seconds: float = DEFAULT_CHECK_TIMEOUT_SECONDS,
+    ) -> None:
         self._worktree = worktree
         self._tests_dir = tests_dir
+        self._timeout_seconds = timeout_seconds
 
     def build(
         self,
@@ -120,7 +127,9 @@ class GhostPatchBuilder:
 
         try:
             if test_relative is not None:
-                reproduction = PytestRunner(args=[test_relative.as_posix()]).run(shadow_path)
+                reproduction = PytestRunner(
+                    args=[test_relative.as_posix()], timeout_seconds=self._timeout_seconds
+                ).run(shadow_path)
                 if reproduction.passed:
                     raise GhostPatchError(
                         "regression test did not reproduce the failure — refusing to "
@@ -156,10 +165,18 @@ class GhostPatchBuilder:
         return GhostPatch(diff=diff, evidence=evidence, changeset=changeset)
 
     def _confirm_no_regressions(self, shadow_path: Path) -> tuple[CheckResult, ...]:
-        runners: list[CheckRunner] = [PytestRunner(), MypyRunner(), RuffRunner()]
+        runners: list[CheckRunner] = [
+            PytestRunner(timeout_seconds=self._timeout_seconds),
+            MypyRunner(),
+            RuffRunner(),
+        ]
         results = run_checks(runners, shadow_path)
         failing = tuple(result for result in results if not result.passed)
         if failing:
+            timed_out = tuple(result for result in failing if result.timed_out)
+            if timed_out:
+                names = ", ".join(result.name for result in timed_out)
+                raise GhostPatchError(f"confirmation timed out ({names})")
             names = ", ".join(result.name for result in failing)
             raise GhostPatchError(
                 f"fix applied but the full suite still fails ({names}):\n"

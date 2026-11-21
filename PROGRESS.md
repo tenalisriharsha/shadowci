@@ -402,4 +402,27 @@ the confirmation suite runs; `test_ghost.py` pins the exact mtime+size
 collision deterministically (`test_build_survives_a_same_mtime_bytecode_collision`)
 so this doesn't depend on a real filesystem race to catch a regression.
 
+## Fix #72: check runners have no timeout
+
+Every check subprocess (`checks/base.py::run_subprocess`, used by
+`pytest_runner.py` and `targeted.py`) ran with no timeout, so a single
+hanging test — an infinite loop, a deadlock, a hung network wait — blocked
+`watch`/`radar` forever: nothing printed and no later edit was ever
+checked. Added `run_subprocess_with_timeout()`, which starts the
+subprocess in its own session (`start_new_session=True`) and, on
+`subprocess.TimeoutExpired`, kills the whole process group with
+`os.killpg` — not just the direct `pytest` child — so its workers and any
+grandchild process a hung test spawned die too. `PytestRunner` and
+`TargetedTestRunner` report a timed-out run as a `CheckResult` with
+`timed_out=True`; `pipeline.run_checks_and_maybe_escalate` treats that as
+"not a bug" — no classification, no provider call — and `cli.py` prints
+`check [name] TIMEOUT after <N>s` plus a hint to raise
+`check_timeout_seconds` if the suite is just slow. The same timeout
+applies to `GhostPatchBuilder`'s post-fix confirmation run (a timed-out
+confirmation means no ghost patch is saved) and to the HEAD check in
+`head_check.py` (issue #38's pre-existing-failure classification). New
+`ShadowCIConfig.check_timeout_seconds` (default `60`, read from
+`shadowci.toml`) controls the budget; `shadowci doctor` reports the
+configured value.
+
 STATUS: COMPLETE

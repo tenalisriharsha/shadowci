@@ -23,6 +23,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+from shadowci.checks.base import run_subprocess_with_timeout
+from shadowci.config import DEFAULT_CHECK_TIMEOUT_SECONDS
+
 HEAD_CACHE_FILENAME = ".shadowci/head_check_cache.json"
 _FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
 
@@ -59,7 +62,9 @@ def _save_cache(cache_path: Path, cache: dict) -> None:
     cache_path.write_text(json.dumps(cache, indent=2))
 
 
-def _run_node_ids_at_sha(project_root: Path, sha: str, node_ids: list[str]) -> dict[str, bool]:
+def _run_node_ids_at_sha(
+    project_root: Path, sha: str, node_ids: list[str], timeout_seconds: float
+) -> dict[str, bool]:
     with tempfile.TemporaryDirectory(prefix="shadowci-head-") as tmp:
         checkout_path = Path(tmp) / "head"
         added = _run_git(["worktree", "add", "--detach", str(checkout_path), sha], project_root)
@@ -70,14 +75,15 @@ def _run_node_ids_at_sha(project_root: Path, sha: str, node_ids: list[str]) -> d
             return {node_id: False for node_id in node_ids}
 
         try:
-            result = subprocess.run(
+            _returncode, output, _duration, timed_out = run_subprocess_with_timeout(
                 [sys.executable, "-m", "pytest", *node_ids],
-                cwd=checkout_path,
-                capture_output=True,
-                text=True,
-                check=False,
+                checkout_path,
+                timeout_seconds=timeout_seconds,
             )
-            output = result.stdout + result.stderr
+            if timed_out:
+                # Issue #72: can't verify this commit's own history within
+                # budget — same stance as a failed worktree checkout above.
+                return {node_id: False for node_id in node_ids}
             failed_ids = set(_FAILED_NODE_RE.findall(output))
             return {node_id: node_id not in failed_ids for node_id in node_ids}
         finally:
@@ -85,7 +91,10 @@ def _run_node_ids_at_sha(project_root: Path, sha: str, node_ids: list[str]) -> d
 
 
 def node_ids_passed_at_head(
-    project_root: Path, node_ids: tuple[str, ...], cache_path: Path | None = None
+    project_root: Path,
+    node_ids: tuple[str, ...],
+    cache_path: Path | None = None,
+    timeout_seconds: float = DEFAULT_CHECK_TIMEOUT_SECONDS,
 ) -> dict[str, bool]:
     """Whether each of `node_ids` (e.g. `"tests/test_x.py::test_x"`) passes
     against a detached checkout of `project_root`'s current HEAD, cached by
@@ -100,7 +109,7 @@ def node_ids_passed_at_head(
 
     missing = [node_id for node_id in node_ids if node_id not in sha_cache]
     if missing:
-        sha_cache.update(_run_node_ids_at_sha(project_root, sha, missing))
+        sha_cache.update(_run_node_ids_at_sha(project_root, sha, missing, timeout_seconds))
         cache[sha] = sha_cache
         _save_cache(resolved_cache_path, cache)
 

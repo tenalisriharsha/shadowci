@@ -19,6 +19,10 @@ else:  # pragma: no cover - exercised only on Python < 3.11
 
 DEFAULT_CONFIG_FILENAME = "shadowci.toml"
 DEFAULT_SHADOW_DIR = ".shadowci/shadow"
+# Issue #72: a hanging check (an infinite loop, a deadlock, a hung network
+# wait in a covered test) must not block watch/radar forever — every check
+# subprocess is killed past this many seconds.
+DEFAULT_CHECK_TIMEOUT_SECONDS = 60.0
 DEFAULT_WATCH_EXTENSIONS = (".py",)
 DEFAULT_IGNORE_DIRS = (
     ".git",
@@ -46,6 +50,7 @@ class ShadowCIConfig:
     provider: str = "scripted"
     interruption_threshold: float = DEFAULT_THRESHOLD
     interruption_min_signals: int = DEFAULT_MIN_SIGNALS
+    check_timeout_seconds: float = DEFAULT_CHECK_TIMEOUT_SECONDS
 
     @property
     def shadow_path(self) -> Path:
@@ -95,5 +100,7 @@ def load_config(project_root: Path | None = None) -> ShadowCIConfig:
         kwargs["interruption_threshold"] = float(section["interruption_threshold"])
     if "interruption_min_signals" in section:
         kwargs["interruption_min_signals"] = int(section["interruption_min_signals"])
+    if "check_timeout_seconds" in section:
+        kwargs["check_timeout_seconds"] = float(section["check_timeout_seconds"])
 
     return ShadowCIConfig(**kwargs)

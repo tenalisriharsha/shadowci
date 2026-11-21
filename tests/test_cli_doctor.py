@@ -143,6 +143,27 @@ def test_doctor_reports_a_failing_claude_cli_provider_with_its_real_message(
     assert "Try:" in combined
 
 
+def test_doctor_shows_the_configured_check_timeout(git_repo: Path, capsys):
+    """Issue #72: `doctor` must surface what `check_timeout_seconds` is
+    actually set to, so a user debugging a hang knows the configured
+    budget without having to open `shadowci.toml` by hand."""
+    main(["init", str(git_repo)])
+    capsys.readouterr()
+    (git_repo / "shadowci.toml").write_text(
+        "[shadowci]\n"
+        'shadow_dir = ".shadowci/shadow"\n'
+        "check_timeout_seconds = 42\n"
+    )
+
+    exit_code = main(["doctor", str(git_repo)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "42" in out and "check_timeout_seconds" in out, (
+        f"expected the configured check_timeout_seconds=42 to be shown, got:\n{out}"
+    )
+
+
 def test_doctor_reports_a_stale_ghost_patch(git_repo: Path, capsys):
     main(["init", str(git_repo)])
     capsys.readouterr()
