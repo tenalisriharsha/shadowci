@@ -13,6 +13,9 @@ def test_defaults_are_sensible(tmp_path: Path):
     assert config.provider == "scripted"
     assert config.interruption_threshold > 0
     assert config.interruption_min_signals >= 1
+    # Issue #72: a hanging check must not block watch/radar forever, so
+    # every check subprocess gets a default timeout out of the box.
+    assert config.check_timeout_seconds == 60
 
 
 def test_load_config_reads_toml_overrides(tmp_path: Path):
@@ -25,6 +28,7 @@ def test_load_config_reads_toml_overrides(tmp_path: Path):
         'watch_extensions = [".py", ".ts"]\n'
         "interruption_threshold = 0.5\n"
         "interruption_min_signals = 3\n"
+        "check_timeout_seconds = 15\n"
     )
     config = load_config(tmp_path)
     assert config.shadow_path == tmp_path / "custom" / "shadow"
@@ -34,6 +38,7 @@ def test_load_config_reads_toml_overrides(tmp_path: Path):
     assert config.watch_extensions == (".py", ".ts")
     assert config.interruption_threshold == 0.5
     assert config.interruption_min_signals == 3
+    assert config.check_timeout_seconds == 15
 
 
 def test_should_watch_respects_extension_and_ignore_dirs():
