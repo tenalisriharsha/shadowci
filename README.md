@@ -412,6 +412,20 @@ ShadowCI's planned feature set is complete and fully tested (313 tests):
   cover, which passed at `HEAD`), or `pre-existing` (the test already
   failed at `HEAD`, so this edit never gets escalated as its cause, and no
   patch is produced).
+- Test guard (issue #71): verification only confirms the full suite
+  passes after the fix, which a fix that deletes or weakens the test that
+  would catch it, skips it, or disables its collection passes trivially —
+  so before ever verifying anything, ShadowCI checks whether the model's
+  proposed fix itself touches a test file: anything under the tests
+  directory, anything pytest would collect by name (`test_*.py`,
+  `*_test.py`), every `conftest.py`, `pytest.ini`/`tox.ini`, or
+  `setup.cfg`/`pyproject.toml` when the diff touches a pytest section.
+  Deleting or renaming one of those counts too. If it does, the fix is
+  refused with no patch saved and no further model call — reported the
+  same way as any other unverified patch. The regression test ShadowCI
+  writes itself (`tests/test_shadowci_ghost_*.py`, always a new file) is
+  unaffected, as is the deterministic revert built for the `INTENTIONAL:`
+  escape hatch and the `update the test` option of a #37 question.
 - Richer model prompts (issue #39): the regression-test and fix prompts
   the `claude-cli` and `local` providers send now carry the user's
   uncommitted edit as a unified diff, the current contents of the changed
